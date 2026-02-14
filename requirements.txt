@@ -15,3 +15,5 @@ jieba
 cn2an
 pykakasi
 jamo
+praat-parselmouth
+pyloudnorm

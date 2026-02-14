@@ -1,6 +1,8 @@
 # zunel/engine.py
 import os
-import re
+import shutil
+import tempfile
+import asyncio
 import librosa
 import soundfile
 import numpy as np
@@ -8,8 +10,9 @@ import numpy as np
 import torch
 
 from zunel import helpers
+from zunel import voice_config
+from zunel import audio_analysis
 from zunel.architecture import VoiceSynthesizer
-from zunel.text_processing import encode_text, symbols
 from zunel.signal_processing import compute_spectrogram
 
 
@@ -40,93 +43,6 @@ class SynthBase(object):
         missing, unexpected = self.model.load_state_dict(ckpt['model'], strict=False)
         print("[zunel] Loaded checkpoint '{}'".format(ckpt_path))
         print('[zunel] missing/unexpected keys:', missing, unexpected)
-
-
-
-
-
-class NeuralSpeaker(SynthBase):
-    language_marks = {
-        "english": "EN",
-        "chinese": "ZH",
-    }
-
-    @staticmethod
-    def _build_phone_sequence(text, cfg, is_symbol):
-        if is_symbol:
-            cleaners = []
-        else:
-            cleaners = cfg.audio.text_cleaners
-
-        seq = encode_text(text, cfg.symbols, cleaners)
-        if cfg.audio.add_blank:
-            seq = helpers.interleave_with(seq, 0)
-        result = torch.LongTensor(seq)
-        return result
-
-    @staticmethod
-    def _concat_audio_segments(segments, sr, speed=1.):
-        buf = []
-        for seg in segments:
-            buf += seg.reshape(-1).tolist()
-            buf += [0] * int((sr * 0.05) / speed)
-        return np.array(buf).astype(np.float32)
-
-    @staticmethod
-    def _chunk_text(text, lang_tag):
-        chunks = helpers.segment_text(text, language_str=lang_tag)
-        print(" [zunel] Text splitted to sentences:")
-        print('\n'.join(chunks))
-        return chunks
-
-    def tts(self, text, output_path, speaker, language='English', speed=1.0):
-        language_key = language.lower()
-
-        if language_key in self.language_marks:
-            mark = self.language_marks[language_key]
-        else:
-            mark = None
-
-        assert mark is not None, "language " + str(language) + " is not supported"
-
-        chunks = self._chunk_text(text, mark)
-        audio_list = []
-        for chunk in chunks:
-            chunk = re.sub(r'([a-z])([A-Z])', r'\1 \2', chunk)
-            chunk = "[" + str(mark) + "]" + chunk + "[" + str(mark) + "]"
-            phones = self._build_phone_sequence(chunk, self.cfg, False)
-            speaker_id = self.cfg.speakers[speaker]
-
-            with torch.no_grad():
-                x = phones.unsqueeze(0).to(self.device)
-
-                x_len = torch.LongTensor([phones.size(0)])
-                x_len = x_len.to(self.device)
-
-                sid = torch.LongTensor([speaker_id])
-                sid = sid.to(self.device)
-
-                audio = self.model.infer(
-                    x,
-                    x_len,
-                    sid = sid,
-                    noise_scale = 0.667,
-                    noise_scale_w = 0.6,
-                    length_scale = 1.0 / speed,
-                )
-
-                audio = audio[0][0, 0].data.cpu().float().numpy()
-            audio_list.append(audio)
-        
-        audio = self._concat_audio_segments(
-            audio_list,
-            sr = self.cfg.audio.sample_rate,
-            speed = speed
-        )
-
-        if output_path is None:
-            return audio
-        soundfile.write(output_path, audio, self.cfg.audio.sample_rate)
 
 
 
@@ -179,3 +95,102 @@ class TimbreConverter(SynthBase):
         if output_path is None:
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
+
+
+
+
+
+class VoiceCloner:
+    def __init__(self, converter, tts_generator):
+        self.converter = converter
+        self.tts_generator = tts_generator
+        self.temp_dir = tempfile.mkdtemp(prefix='zunel_')
+        print(f"[zunel] Temporary directory created: {self.temp_dir}")
+
+    def __del__(self):
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+            print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
+
+    async def generate_source_embedding(self, target_language, gender, voice_version=0):
+        voice = voice_config.get_voice(target_language, gender, voice_version)
+        calibration_texts = voice_config.get_calibration_texts(target_language)
+        
+        ref_paths = []
+        for i, text in enumerate(calibration_texts):
+            ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
+            await self.tts_generator.save_with_fallback(
+                text = text,
+                preferred_voice = voice,
+                output_file = ref_path,
+            )
+            ref_paths.append(ref_path)
+            print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
+        
+        embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
+        print(f"[zunel] Created embedding for {target_language}/{gender}")
+        return embedding, ref_paths[0]
+
+    async def clone_voice(
+        self,
+        reference_audio_path,
+        target_language,
+        target_text,
+        gender,
+        output_path,
+        voice_version = 0,
+        auto_params = True,
+        manual_pitch = None,
+        manual_speed = None,
+        manual_volume = None,
+        tau = 0.3
+    ):
+        if not os.path.exists(reference_audio_path):
+            raise FileNotFoundError(f"Reference audio not found: {reference_audio_path}")
+        
+        print(f"[zunel] Starting voice cloning process...")
+        print(f"[zunel] Reference: {reference_audio_path}")
+        print(f"[zunel] Target language: {target_language}")
+        print(f"[zunel] Gender: {gender}")
+        
+        target_se = self.converter.extract_se([reference_audio_path])
+        
+        if auto_params:
+            print("[zunel] Analyzing reference audio parameters...")
+            params = audio_analysis.analyze_audio(reference_audio_path)
+            pitch = params['pitch']
+            speed = params['speed']
+            volume = params['volume']
+            print(f"[zunel] Detected: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
+        else:
+            pitch = manual_pitch if manual_pitch is not None else 0
+            speed = manual_speed if manual_speed is not None else 0
+            volume = manual_volume if manual_volume is not None else 0
+            print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
+        
+        source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
+        
+        voice = voice_config.get_voice(target_language, gender, voice_version)
+        tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis.wav')
+        
+        await self.tts_generator.save(
+            text = target_text,
+            voice = voice,
+            pitch = f"{pitch:+d}Hz" if pitch != 0 else "+0Hz",
+            rate = f"{speed:+d}%" if speed != 0 else "+0%",
+            volume = f"{volume:+d}%" if volume != 0 else "+0%",
+            output_file = tmp_synthesis_path
+        )
+        
+        print("[zunel] Performing voice conversion...")
+        self.converter.convert(
+            audio_src_path=tmp_synthesis_path,
+            src_se = source_se,
+            tgt_se = target_se,
+            output_path = output_path,
+            tau = tau
+        )
+        
+        print(f"[zunel] Voice cloning complete: {output_path}")
+        return output_path
