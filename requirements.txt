@@ -1,0 +1,17 @@
+torch>=2.0.0
+numpy
+soundfile
+librosa
+pydub
+faster-whisper
+whisper-timestamped
+langid
+gradio
+inflect
+unidecode
+eng-to-ipa
+pypinyin
+jieba
+cn2an
+pykakasi
+jamo
