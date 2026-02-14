@@ -22,6 +22,19 @@ def detect_gender_from_pitch(mean_pitch_hz):
     return 'male' if mean_pitch_hz < GENDER_THRESHOLD_HZ else 'female'
 
 
+def is_extreme_voice(pitch_hz, detected_gender):
+    if detected_gender == 'male':
+        return pitch_hz < 100 or pitch_hz > 140
+    else:
+        return pitch_hz < 190 or pitch_hz > 230
+
+
+def get_recommended_tau(pitch_hz, detected_gender):
+    if is_extreme_voice(pitch_hz, detected_gender):
+        return 0.2
+    return 0.3
+
+
 def analyze_pitch(audio_path):
     sound = parselmouth.Sound(audio_path)
     
@@ -46,16 +59,13 @@ def analyze_pitch(audio_path):
     valid_strengths = pitch_strengths[valid_indices]
     
     if len(valid_pitches) == 0:
-        return 0, None
+        return 0, None, False, 0.3
     
     weighted_pitch = np.average(valid_pitches, weights=valid_strengths)
     detected_gender = detect_gender_from_pitch(weighted_pitch)
-    
-    reference_pitch = MALE_AVG_PITCH_HZ if detected_gender == 'male' else FEMALE_AVG_PITCH_HZ
-    
-    pitch_deviation = weighted_pitch - reference_pitch
-    pitch_deviation = np.clip(pitch_deviation, -50, 50)
-    return int(pitch_deviation), detected_gender
+    is_extreme = is_extreme_voice(weighted_pitch, detected_gender)
+    recommended_tau = get_recommended_tau(weighted_pitch, detected_gender)
+    return int(weighted_pitch), detected_gender, is_extreme, recommended_tau
 
 
 def analyze_speed(audio_path):
@@ -96,11 +106,7 @@ def analyze_speed(audio_path):
             return 0
         
         articulation_rate = n_syllables / phonation_time
-        
-        rate_deviation = articulation_rate - NORMAL_SPEECH_RATE_SPS
-        speed_percent = (rate_deviation / NORMAL_SPEECH_RATE_SPS) * 100
-        speed_percent = np.clip(speed_percent, -50, 100)
-        return int(speed_percent)
+        return articulation_rate
     except Exception as e:
         print(f"[zunel] Speed analysis error: {e}")
         return 0
@@ -115,24 +121,22 @@ def analyze_volume(audio_path):
         
         meter = pyln.Meter(sr)
         loudness = meter.integrated_loudness(data)
-        
-        loudness_deviation = loudness - REFERENCE_LOUDNESS_LUFS
-        volume_percent = (loudness_deviation / abs(REFERENCE_LOUDNESS_LUFS)) * 100
-        volume_percent = np.clip(volume_percent, -50, 50)
-        return int(volume_percent)
+        return loudness
     except Exception as e:
         print(f"[zunel] Volume analysis error: {e}")
-        return 0
+        return REFERENCE_LOUDNESS_LUFS
 
 
 def analyze_audio(audio_path):
-    pitch, detected_gender = analyze_pitch(audio_path)
-    speed = analyze_speed(audio_path)
-    volume = analyze_volume(audio_path)
+    pitch_hz, detected_gender, is_extreme, recommended_tau = analyze_pitch(audio_path)
+    speech_rate = analyze_speed(audio_path)
+    loudness_lufs = analyze_volume(audio_path)
     
     return {
-        'pitch': pitch,
-        'speed': speed,
-        'volume': volume,
-        'detected_gender': detected_gender
+        'pitch_hz': pitch_hz,
+        'detected_gender': detected_gender,
+        'is_extreme_voice': is_extreme,
+        'recommended_tau': recommended_tau,
+        'speech_rate_sps': speech_rate,
+        'loudness_lufs': loudness_lufs
     }

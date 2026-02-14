@@ -1,9 +1,8 @@
 # zunel/engine.py
 import os
 import shutil
-import tempfile
-import asyncio
 import librosa
+import tempfile
 import soundfile
 import numpy as np
 
@@ -119,7 +118,6 @@ class VoiceCloner:
         ref_paths = []
         for i, text in enumerate(calibration_texts):
             ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
-            
             await self.tts_generator.save_with_fallback(
                 text = text,
                 preferred_voice = voice,
@@ -130,7 +128,6 @@ class VoiceCloner:
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
         embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
-        
         print(f"[zunel] Created embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
@@ -146,7 +143,7 @@ class VoiceCloner:
         manual_pitch = None,
         manual_speed = None,
         manual_volume = None,
-        tau = 0.3
+        tau = None
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
@@ -159,23 +156,47 @@ class VoiceCloner:
         target_se = self.converter.extract_se([reference_audio_path])
         
         if auto_params:
-            print("[zunel] Analyzing reference audio parameters...")
+            print("[zunel] Analyzing reference audio...")
             params = audio_analysis.analyze_audio(reference_audio_path)
-            pitch = params['pitch']
-            speed = params['speed']
-            volume = params['volume']
+            
+            pitch_hz = params['pitch_hz']
             detected_gender = params.get('detected_gender')
+            is_extreme = params.get('is_extreme_voice', False)
+            recommended_tau = params.get('recommended_tau', 0.3)
+            speech_rate = params.get('speech_rate_sps', 0)
+            loudness = params.get('loudness_lufs', -20)
+            
+            print(f"[zunel] Detected pitch: {pitch_hz} Hz ({detected_gender})")
+            print(f"[zunel] Speech rate: {speech_rate:.2f} syllables/sec")
+            print(f"[zunel] Loudness: {loudness:.1f} LUFS")
             
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
-                print(f"[zunel] This may affect quality. Consider using gender='{detected_gender}'")
+                print(f"[zunel] Consider using gender='{detected_gender}' for better results")
             
-            print(f"[zunel] Detected: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
+            if is_extreme:
+                print(f"[zunel] WARNING: Detected extreme voice characteristics")
+                print(f"[zunel] Adjusting tau to {recommended_tau} for better quality")
+            
+            if tau is None:
+                tau = recommended_tau
+            
+            pitch = 0
+            speed = 0
+            volume = 0
+            
+            print(f"[zunel] Using neutral TTS parameters (pitch=0Hz, speed=0%, volume=0%)")
+            print(f"[zunel] Voice conversion will handle timbre transfer with tau={tau}")
         else:
             pitch = manual_pitch if manual_pitch is not None else 0
             speed = manual_speed if manual_speed is not None else 0
             volume = manual_volume if manual_volume is not None else 0
+            
+            if tau is None:
+                tau = 0.3
+            
             print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
+            print(f"[zunel] Using tau={tau}")
         
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
@@ -199,6 +220,5 @@ class VoiceCloner:
             output_path = output_path,
             tau = tau
         )
-        
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path
