@@ -119,6 +119,7 @@ class VoiceCloner:
         ref_paths = []
         for i, text in enumerate(calibration_texts):
             ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
+            
             await self.tts_generator.save_with_fallback(
                 text = text,
                 preferred_voice = voice,
@@ -129,6 +130,7 @@ class VoiceCloner:
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
         embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
+        
         print(f"[zunel] Created embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
@@ -147,7 +149,7 @@ class VoiceCloner:
         tau = 0.3
     ):
         if not os.path.exists(reference_audio_path):
-            raise FileNotFoundError(f"Reference audio not found: {reference_audio_path}")
+            raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
         print(f"[zunel] Starting voice cloning process...")
         print(f"[zunel] Reference: {reference_audio_path}")
@@ -162,6 +164,12 @@ class VoiceCloner:
             pitch = params['pitch']
             speed = params['speed']
             volume = params['volume']
+            detected_gender = params.get('detected_gender')
+            
+            if detected_gender and detected_gender != gender:
+                print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
+                print(f"[zunel] This may affect quality. Consider using gender='{detected_gender}'")
+            
             print(f"[zunel] Detected: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
         else:
             pitch = manual_pitch if manual_pitch is not None else 0
@@ -185,7 +193,7 @@ class VoiceCloner:
         
         print("[zunel] Performing voice conversion...")
         self.converter.convert(
-            audio_src_path=tmp_synthesis_path,
+            audio_src_path = tmp_synthesis_path,
             src_se = source_se,
             tgt_se = target_se,
             output_path = output_path,
