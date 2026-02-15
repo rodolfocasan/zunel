@@ -14,6 +14,7 @@ from zunel import voice_config
 from zunel import audio_analysis
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
+from zunel.bottleneck import BottleneckModule
 
 
 
@@ -49,11 +50,25 @@ class SynthBase(object):
 
 
 class TimbreConverter(SynthBase):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, bottleneck_type='segment_gst', **kwargs):
         super().__init__(*args, **kwargs)
         self.version = getattr(self.cfg, '_release_', "1.0.0")
+        
+        embedding_dim = self.cfg.architecture.get('embedding_dim', 256)
+        
+        self.bottleneck = BottleneckModule(
+            input_dim=embedding_dim,
+            bottleneck_dim=1024,
+            bottleneck_type=bottleneck_type,
+            n_style_tokens=10,
+            n_heads=8,
+            n_vertices=128,
+            kl_weight=0.0001
+        ).to(self.device)
+        
+        print(f"[zunel] Initialized {bottleneck_type} bottleneck for voice transfer")
 
-    def extract_se(self, ref_wav_list, se_save_path=None):
+    def extract_se(self, ref_wav_list, se_save_path=None, use_bottleneck=True):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
 
@@ -71,10 +86,20 @@ class TimbreConverter(SynthBase):
                 g = self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
                 embeddings.append(g.detach())
 
-        result = torch.stack(embeddings).mean(0)
+        raw_embedding = torch.stack(embeddings).mean(0)
+        
+        if use_bottleneck:
+            with torch.no_grad():
+                refined_embedding, kl_loss = self.bottleneck(raw_embedding, inference=True)
+                result = refined_embedding
+                print(f"[zunel] Applied bottleneck refinement to speaker embedding")
+        else:
+            result = raw_embedding
+        
         if se_save_path is not None:
             os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
             torch.save(result.cpu(), se_save_path)
+        
         return result
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3, message="default"):
@@ -108,10 +133,7 @@ def compute_embedding_distance(embedding1, embedding2):
     return distance
 
 
-def compute_adaptive_tau(reference_params, source_embedding, target_embedding, same_language=False):
-    if same_language:
-        return 0.05, 0.0, 0.0, 0.0
-    
+def compute_adaptive_tau(reference_params, source_embedding, target_embedding):
     formant_dispersion = reference_params.get('formant_dispersion', 0)
     spectral_complexity = reference_params.get('spectral_envelope_complexity', 0)
     pitch_variability = reference_params.get('pitch_variability', 0)
@@ -185,24 +207,8 @@ def compute_adaptive_tau(reference_params, source_embedding, target_embedding, s
         adaptive_tau = min(adaptive_tau + 0.08, 0.55)
     
     adaptive_tau = max(0.10, min(adaptive_tau, 0.55))
+    
     return adaptive_tau, embedding_distance, voice_complexity_score, roughness_score
-
-
-def normalize_language_code(lang_code):
-    lang_map = {
-        'es-latino': 'es',
-        'es-spain': 'es',
-        'es': 'es',
-        'en': 'en',
-        'fr': 'fr',
-        'de': 'de',
-        'pt': 'pt',
-        'ru': 'ru',
-        'ja': 'ja',
-        'ko': 'ko',
-        'zh': 'zh'
-    }
-    return lang_map.get(lang_code, lang_code)
 
 
 
@@ -236,70 +242,9 @@ class VoiceCloner:
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
-        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
-        print(f"[zunel] Created embedding for {target_language}/{gender}")
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_bottleneck=True)
+        print(f"[zunel] Created refined embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
-
-    async def clone_voice_same_language(
-        self,
-        reference_audio_path,
-        target_language,
-        target_text,
-        gender,
-        output_path,
-        voice_version=0,
-        reference_params=None
-    ):
-        print("[zunel] Using SAME LANGUAGE optimization path")
-        print("[zunel] Preserving identity via direct synthesis")
-        
-        target_se = self.converter.extract_se([reference_audio_path])
-        
-        voice = voice_config.get_voice(target_language, gender, voice_version)
-        tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis_same_lang.wav')
-        
-        pitch = 0
-        speed = 0
-        volume = 0
-        
-        if reference_params:
-            pitch_hz = reference_params.get('pitch_hz', 0)
-            if pitch_hz > 0:
-                gender_avg = 120.0 if gender == 'male' else 210.0
-                pitch_diff = int(pitch_hz - gender_avg)
-                pitch = max(-50, min(50, pitch_diff))
-            
-            speech_rate = reference_params.get('speech_rate_sps', 0)
-            if speech_rate > 0:
-                speed_factor = (speech_rate / 4.5) - 1.0
-                speed = int(speed_factor * 100)
-                speed = max(-30, min(30, speed))
-            
-            loudness = reference_params.get('loudness_lufs', -20)
-            volume_diff = int(loudness - (-20))
-            volume = max(-15, min(15, volume_diff))
-            
-            print(f"[zunel] Adjusted params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
-        
-        await self.tts_generator.save(
-            text=target_text,
-            voice=voice,
-            pitch=f"{pitch:+d}Hz" if pitch != 0 else "+0Hz",
-            rate=f"{speed:+d}%" if speed != 0 else "+0%",
-            volume=f"{volume:+d}%" if volume != 0 else "+0%",
-            output_file=tmp_synthesis_path
-        )
-        
-        print("[zunel] Applying minimal voice conversion (tau=0.05)")
-        self.converter.convert(
-            audio_src_path=tmp_synthesis_path,
-            src_se=target_se,
-            tgt_se=target_se,
-            output_path=output_path,
-            tau=0.05
-        )
-        
-        return output_path
 
     async def clone_voice(
         self,
@@ -312,17 +257,18 @@ class VoiceCloner:
         auto_params=True,
         manual_pitch=None,
         manual_speed=None,
-        manual_volume=None,
-        input_language=None
+        manual_volume=None
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
-        print(f"[zunel] Starting voice cloning process...")
+        print(f"[zunel] Starting voice cloning with GST bottleneck...")
         print(f"[zunel] Reference: {reference_audio_path}")
-        print(f"[zunel] Input language: {input_language}")
         print(f"[zunel] Target language: {target_language}")
         print(f"[zunel] Gender: {gender}")
+        
+        print("[zunel] Extracting and refining target speaker embedding...")
+        target_se = self.converter.extract_se([reference_audio_path], use_bottleneck=True)
         
         params = None
         if auto_params:
@@ -374,28 +320,7 @@ class VoiceCloner:
             
             if is_extreme:
                 print(f"[zunel] WARNING: Detected extreme voice characteristics")
-        
-        if input_language:
-            input_lang_normalized = normalize_language_code(input_language)
-            target_lang_normalized = normalize_language_code(target_language)
             
-            if input_lang_normalized == target_lang_normalized:
-                print(f"\n[zunel] SAME LANGUAGE DETECTED: {input_language} -> {target_language}")
-                return await self.clone_voice_same_language(
-                    reference_audio_path=reference_audio_path,
-                    target_language=target_language,
-                    target_text=target_text,
-                    gender=gender,
-                    output_path=output_path,
-                    voice_version=voice_version,
-                    reference_params=params
-                )
-            else:
-                print(f"\n[zunel] CROSS-LANGUAGE DETECTED: {input_language} -> {target_language}")
-        
-        target_se = self.converter.extract_se([reference_audio_path])
-        
-        if auto_params:
             pitch = 0
             speed = 0
             volume = 0
@@ -406,13 +331,12 @@ class VoiceCloner:
             volume = manual_volume if manual_volume is not None else 0
             print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
         
+        print("[zunel] Generating source embedding with bottleneck...")
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
-        
-        same_lang = input_language and normalize_language_code(input_language) == normalize_language_code(target_language)
         
         if auto_params and params:
             adaptive_tau, emb_distance, complexity_score, rough_score = compute_adaptive_tau(
-                params, source_se, target_se, same_language=same_lang
+                params, source_se, target_se
             )
             
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
@@ -436,7 +360,7 @@ class VoiceCloner:
             output_file=tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion with optimized parameters...")
+        print("[zunel] Performing voice conversion with GST-refined embeddings...")
         self.converter.convert(
             audio_src_path=tmp_synthesis_path,
             src_se=source_se,
@@ -445,4 +369,5 @@ class VoiceCloner:
             tau=tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
+        print("[zunel] Used Google Tacotron-style GST bottleneck for identity preservation")
         return output_path
