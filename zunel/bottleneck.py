@@ -82,7 +82,7 @@ class SegmentGSTBottleneck(nn.Module):
         self.bottleneck_dim = bottleneck_dim
         
         self.pre_projection = nn.Linear(input_dim, bottleneck_dim)
-        self.bn = nn.BatchNorm1d(bottleneck_dim)
+        self.layer_norm = nn.LayerNorm(bottleneck_dim)
         
         self.gst = GlobalStyleToken(
             embedding_dim=bottleneck_dim,
@@ -96,7 +96,7 @@ class SegmentGSTBottleneck(nn.Module):
         if speaker_embedding.dim() == 3:
             speaker_embedding = speaker_embedding.squeeze(-1)
         
-        x = F.relu(self.bn(self.pre_projection(speaker_embedding)))
+        x = F.relu(self.layer_norm(self.pre_projection(speaker_embedding)))
         
         x = x.unsqueeze(1)
         

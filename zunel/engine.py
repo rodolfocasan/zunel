@@ -69,6 +69,8 @@ class TimbreConverter(SynthBase):
             kl_weight=0.0001
         ).to(self.device)
         
+        self.bottleneck.eval()
+        
         print(f"[zunel] Initialized {bottleneck_type} bottleneck for voice transfer")
 
     def extract_se(self, ref_wav_list, se_save_path=None, use_bottleneck=True):
