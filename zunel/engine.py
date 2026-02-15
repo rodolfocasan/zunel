@@ -57,7 +57,7 @@ class TimbreConverter(SynthBase):
         super().__init__(*args, **kwargs)
         self.version = getattr(self.cfg, '_release_', "1.0.0")
         
-        embedding_dim = self.cfg.architecture.get('embedding_dim', 256)
+        embedding_dim = getattr(self.cfg.architecture, 'embedding_dim', 256)
         
         self.bottleneck = BottleneckModule(
             input_dim=embedding_dim,
