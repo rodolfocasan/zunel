@@ -76,10 +76,11 @@ class GlobalStyleToken(nn.Module):
 
 
 class SegmentGSTBottleneck(nn.Module):
-    def __init__(self, input_dim=256, bottleneck_dim=1024, n_style_tokens=10, n_heads=8):
+    def __init__(self, input_dim=256, bottleneck_dim=1024, output_dim=256, n_style_tokens=10, n_heads=8):
         super().__init__()
         self.input_dim = input_dim
         self.bottleneck_dim = bottleneck_dim
+        self.output_dim = output_dim
         
         self.pre_projection = nn.Linear(input_dim, bottleneck_dim)
         self.layer_norm = nn.LayerNorm(bottleneck_dim)
@@ -90,7 +91,7 @@ class SegmentGSTBottleneck(nn.Module):
             n_heads=n_heads
         )
         
-        self.post_projection = nn.Linear(bottleneck_dim, bottleneck_dim)
+        self.post_projection = nn.Linear(bottleneck_dim, output_dim)
         
     def forward(self, speaker_embedding):
         if speaker_embedding.dim() == 3:
@@ -111,16 +112,17 @@ class SegmentGSTBottleneck(nn.Module):
 
 
 class VAEBottleneck(nn.Module):
-    def __init__(self, input_dim=256, bottleneck_dim=1024, kl_weight=0.0001):
+    def __init__(self, input_dim=256, bottleneck_dim=1024, output_dim=256, kl_weight=0.0001):
         super().__init__()
         self.input_dim = input_dim
         self.bottleneck_dim = bottleneck_dim
+        self.output_dim = output_dim
         self.kl_weight = kl_weight
         
         self.encoder_mean = nn.Linear(input_dim, bottleneck_dim)
         self.encoder_logvar = nn.Linear(input_dim, bottleneck_dim)
         
-        self.decoder = nn.Linear(bottleneck_dim, bottleneck_dim)
+        self.decoder = nn.Linear(bottleneck_dim, output_dim)
         
     def reparameterize(self, mean, logvar):
         std = torch.exp(0.5 * logvar)
@@ -151,10 +153,11 @@ class VAEBottleneck(nn.Module):
 
 
 class SimplexBottleneck(nn.Module):
-    def __init__(self, input_dim=256, bottleneck_dim=1024, n_vertices=128):
+    def __init__(self, input_dim=256, bottleneck_dim=1024, output_dim=256, n_vertices=128):
         super().__init__()
         self.input_dim = input_dim
         self.bottleneck_dim = bottleneck_dim
+        self.output_dim = output_dim
         self.n_vertices = n_vertices
         
         self.projection = nn.Linear(input_dim, bottleneck_dim)
@@ -163,6 +166,8 @@ class SimplexBottleneck(nn.Module):
         nn.init.orthogonal_(self.vertices)
         
         self.temperature = nn.Parameter(torch.tensor(1.0))
+        
+        self.output_projection = nn.Linear(bottleneck_dim, output_dim)
         
     def forward(self, speaker_embedding):
         if speaker_embedding.dim() == 3:
@@ -178,6 +183,7 @@ class SimplexBottleneck(nn.Module):
         weights = F.softmax(similarities, dim=-1)
         
         output = torch.matmul(weights, vertices_normalized)
+        output = self.output_projection(output)
         output = F.normalize(output, p=2, dim=-1)
         return output.unsqueeze(-1)
 
@@ -190,6 +196,7 @@ class BottleneckModule(nn.Module):
         self,
         input_dim=256,
         bottleneck_dim=1024,
+        output_dim=256,
         bottleneck_type='segment_gst',
         n_style_tokens=10,
         n_heads=8,
@@ -203,6 +210,7 @@ class BottleneckModule(nn.Module):
             self.bottleneck = SegmentGSTBottleneck(
                 input_dim=input_dim,
                 bottleneck_dim=bottleneck_dim,
+                output_dim=output_dim,
                 n_style_tokens=n_style_tokens,
                 n_heads=n_heads
             )
@@ -210,12 +218,14 @@ class BottleneckModule(nn.Module):
             self.bottleneck = VAEBottleneck(
                 input_dim=input_dim,
                 bottleneck_dim=bottleneck_dim,
+                output_dim=output_dim,
                 kl_weight=kl_weight
             )
         elif bottleneck_type == 'simplex':
             self.bottleneck = SimplexBottleneck(
                 input_dim=input_dim,
                 bottleneck_dim=bottleneck_dim,
+                output_dim=output_dim,
                 n_vertices=n_vertices
             )
         else:

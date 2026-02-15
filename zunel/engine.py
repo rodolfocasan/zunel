@@ -62,6 +62,7 @@ class TimbreConverter(SynthBase):
         self.bottleneck = BottleneckModule(
             input_dim=embedding_dim,
             bottleneck_dim=1024,
+            output_dim=embedding_dim,
             bottleneck_type=bottleneck_type,
             n_style_tokens=10,
             n_heads=8,
