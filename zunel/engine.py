@@ -15,6 +15,7 @@ from zunel import audio_analysis
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
 from zunel.bottleneck import BottleneckModule
+from zunel.adapters import SpeakerAdapter
 
 
 
@@ -72,7 +73,31 @@ class TimbreConverter(SynthBase):
         
         self.bottleneck.eval()
         
+        self.speaker_adapter_src = None
+        self.speaker_adapter_tgt = None
+        
         print(f"[zunel] Initialized {bottleneck_type} bottleneck for voice transfer")
+
+    def load_adapters(self, adapter_path):
+        if os.path.exists(adapter_path):
+            checkpoint = torch.load(adapter_path, map_location=self.device)
+            
+            embedding_dim = getattr(self.cfg.architecture, 'embedding_dim', 256)
+            
+            self.speaker_adapter_src = SpeakerAdapter(embedding_dim).to(self.device)
+            self.speaker_adapter_tgt = SpeakerAdapter(embedding_dim).to(self.device)
+            
+            self.speaker_adapter_src.load_state_dict(checkpoint['adapter_src'])
+            self.speaker_adapter_tgt.load_state_dict(checkpoint['adapter_tgt'])
+            
+            self.speaker_adapter_src.eval()
+            self.speaker_adapter_tgt.eval()
+            
+            self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
+            
+            print(f"[zunel] Loaded speaker adapters from {adapter_path}")
+        else:
+            print(f"[zunel] No adapters found at {adapter_path}, using base model")
 
     def extract_se(self, ref_wav_list, se_save_path=None, use_bottleneck=True):
         if isinstance(ref_wav_list, str):

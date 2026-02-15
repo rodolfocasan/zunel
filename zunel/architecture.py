@@ -374,6 +374,13 @@ class VoiceSynthesizer(nn.Module):
             self.dp = TemporalPredictor(base_channels, 256, 3, 0.5, gin_channels=embedding_dim)
             self.emb_g = nn.Embedding(n_speakers, embedding_dim)
         self.zero_g = zero_g
+        
+        self.speaker_adapter_src = None
+        self.speaker_adapter_tgt = None
+
+    def set_speaker_adapters(self, src_adapter, tgt_adapter):
+        self.speaker_adapter_src = src_adapter
+        self.speaker_adapter_tgt = tgt_adapter
 
     def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., sdp_ratio=0.2, max_len=None):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
@@ -399,29 +406,25 @@ class VoiceSynthesizer(nn.Module):
     def voice_conversion(self, y, y_lengths, sid_src, sid_tgt, tau=1.0):
         g_src = sid_src
         g_tgt = sid_tgt
-
-        if not self.zero_g:
-            g_enc = g_src
-        else:
-            g_enc = torch.zeros_like(g_src)
+        
+        if self.speaker_adapter_src is not None:
+            g_src = self.speaker_adapter_src(g_src.squeeze(-1)).unsqueeze(-1)
+        
+        if self.speaker_adapter_tgt is not None:
+            g_tgt = self.speaker_adapter_tgt(g_tgt.squeeze(-1)).unsqueeze(-1)
 
         z, m_q, logs_q, y_mask = self.var_encoder(
             y,
             y_lengths,
-            g = g_enc,
+            g = g_src,
             tau = tau,
         )
 
         z_p = self.norm_flow(z, y_mask, g=g_src)
         z_hat = self.norm_flow(z_p, y_mask, g=g_tgt, reverse=True)
 
-        if not self.zero_g:
-            g_dec = g_tgt
-        else:
-            g_dec = torch.zeros_like(g_tgt)
-
         o_hat = self.wave_decoder(
             z_hat * y_mask,
-            g = g_dec,
+            g = g_tgt,
         )
         return o_hat, y_mask, (z, z_p, z_hat)
