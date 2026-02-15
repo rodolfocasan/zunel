@@ -21,9 +21,12 @@ from zunel.bottleneck import BottleneckModule
 
 
 class SynthBase(object):
-    def __init__(self, config_path, device='cuda:0'):
-        if 'cuda' in device:
-            assert torch.cuda.is_available()
+    def __init__(self, config_path, device='auto'):
+        if device == 'auto':
+            device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        elif 'cuda' in device and not torch.cuda.is_available():
+            print(f"[zunel] WARNING: CUDA requested but not available, falling back to CPU")
+            device = 'cpu'
 
         cfg = helpers.load_config(config_path)
 
