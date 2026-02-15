@@ -68,7 +68,6 @@ class GlobalStyleToken(nn.Module):
         )
         
         style_embed = torch.mean(style_embed, dim=1)
-        style_embed = F.normalize(style_embed, p=2, dim=-1)
         return style_embed
 
 
@@ -104,7 +103,6 @@ class SegmentGSTBottleneck(nn.Module):
         style_embedding = self.gst(x)
         
         output = self.post_projection(style_embedding)
-        output = F.normalize(output, p=2, dim=-1)
         return output.unsqueeze(-1)
 
 
@@ -142,7 +140,6 @@ class VAEBottleneck(nn.Module):
             z = self.reparameterize(mean, logvar)
         
         output = self.decoder(z)
-        output = F.normalize(output, p=2, dim=-1)
         
         kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1)
         kl_loss = torch.mean(kl_loss) * self.kl_weight
@@ -184,7 +181,6 @@ class SimplexBottleneck(nn.Module):
         
         output = torch.matmul(weights, vertices_normalized)
         output = self.output_projection(output)
-        output = F.normalize(output, p=2, dim=-1)
         return output.unsqueeze(-1)
 
 

@@ -101,6 +101,7 @@ class TimbreConverter(SynthBase):
                 print(f"[zunel] Applied bottleneck refinement to speaker embedding")
         else:
             result = raw_embedding
+            print(f"[zunel] Using raw speaker embedding (no bottleneck)")
         
         if se_save_path is not None:
             os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
@@ -191,9 +192,9 @@ def compute_adaptive_tau(reference_params, source_embedding, target_embedding):
     embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.12
     voice_complexity_score += embedding_similarity_bonus
     
-    base_tau = 0.15
-    complexity_adjustment = voice_complexity_score * 0.25
-    distance_adjustment = embedding_distance * 0.20
+    base_tau = 0.30
+    complexity_adjustment = voice_complexity_score * 0.40
+    distance_adjustment = embedding_distance * 0.25
     
     adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
     
@@ -207,12 +208,14 @@ def compute_adaptive_tau(reference_params, source_embedding, target_embedding):
     confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
     
     if confidence_score < 0.6:
-        adaptive_tau = min(adaptive_tau + 0.05, 0.55)
+        adaptive_tau = min(adaptive_tau + 0.10, 0.95)
     
     if roughness_score > 0.5:
-        adaptive_tau = min(adaptive_tau + 0.08, 0.55)
+        roughness_boost = (roughness_score - 0.5) * 0.80
+        adaptive_tau = min(adaptive_tau + roughness_boost, 0.95)
+        print(f"[zunel] Detected rough/raspy voice, applying roughness boost: +{roughness_boost:.3f}")
     
-    adaptive_tau = max(0.10, min(adaptive_tau, 0.55))
+    adaptive_tau = max(0.20, min(adaptive_tau, 0.95))
     
     return adaptive_tau, embedding_distance, voice_complexity_score, roughness_score
 
@@ -232,7 +235,7 @@ class VoiceCloner:
             shutil.rmtree(self.temp_dir)
             print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
 
-    async def generate_source_embedding(self, target_language, gender, voice_version=0):
+    async def generate_source_embedding(self, target_language, gender, voice_version=0, use_bottleneck=True):
         voice = voice_config.get_voice(target_language, gender, voice_version)
         calibration_texts = voice_config.get_calibration_texts(target_language)
         
@@ -248,7 +251,7 @@ class VoiceCloner:
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
-        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_bottleneck=True)
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_bottleneck=use_bottleneck)
         print(f"[zunel] Created refined embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
@@ -263,18 +266,20 @@ class VoiceCloner:
         auto_params=True,
         manual_pitch=None,
         manual_speed=None,
-        manual_volume=None
+        manual_volume=None,
+        use_bottleneck=False
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
-        print(f"[zunel] Starting voice cloning with GST bottleneck...")
+        print(f"[zunel] Starting voice cloning...")
         print(f"[zunel] Reference: {reference_audio_path}")
         print(f"[zunel] Target language: {target_language}")
         print(f"[zunel] Gender: {gender}")
+        print(f"[zunel] Bottleneck: {'ENABLED' if use_bottleneck else 'DISABLED (recommended for better identity preservation)'}")
         
-        print("[zunel] Extracting and refining target speaker embedding...")
-        target_se = self.converter.extract_se([reference_audio_path], use_bottleneck=True)
+        print("[zunel] Extracting target speaker embedding...")
+        target_se = self.converter.extract_se([reference_audio_path], use_bottleneck=use_bottleneck)
         
         params = None
         if auto_params:
@@ -318,7 +323,7 @@ class VoiceCloner:
                 print(f"[zunel] Roughness score: {roughness_score:.3f}")
             
             if roughness_score > 0.4:
-                print(f"[zunel] Detected rough/raspy voice characteristics")
+                print(f"[zunel] Detected rough/raspy voice characteristics - will use high tau")
             
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
@@ -337,8 +342,8 @@ class VoiceCloner:
             volume = manual_volume if manual_volume is not None else 0
             print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
         
-        print("[zunel] Generating source embedding with bottleneck...")
-        source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
+        print("[zunel] Generating source embedding...")
+        source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version, use_bottleneck=use_bottleneck)
         
         if auto_params and params:
             adaptive_tau, emb_distance, complexity_score, rough_score = compute_adaptive_tau(
@@ -351,7 +356,7 @@ class VoiceCloner:
             print(f"[zunel] Adaptive tau: {adaptive_tau:.4f}")
             tau = adaptive_tau
         else:
-            tau = 0.30
+            tau = 0.50
             print(f"[zunel] Using default tau: {tau:.4f}")
         
         voice = voice_config.get_voice(target_language, gender, voice_version)
@@ -366,7 +371,7 @@ class VoiceCloner:
             output_file=tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion with GST-refined embeddings...")
+        print("[zunel] Performing voice conversion...")
         self.converter.convert(
             audio_src_path=tmp_synthesis_path,
             src_se=source_se,
@@ -375,5 +380,4 @@ class VoiceCloner:
             tau=tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
-        print("[zunel] Used Google Tacotron-style GST bottleneck for identity preservation")
         return output_path
