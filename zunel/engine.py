@@ -29,7 +29,7 @@ class SynthBase(object):
         model = VoiceSynthesizer(
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
-            n_speakers = cfg.audio.num_speakers,
+            n_speakers=cfg.audio.num_speakers,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -113,37 +113,77 @@ def compute_adaptive_tau(reference_params, source_embedding, target_embedding):
     spectral_complexity = reference_params.get('spectral_envelope_complexity', 0)
     pitch_variability = reference_params.get('pitch_variability', 0)
     
+    jitter = reference_params.get('jitter_local', 0)
+    shimmer = reference_params.get('shimmer_local', 0)
+    hnr = reference_params.get('hnr', 20)
+    roughness_score = reference_params.get('roughness_score', 0)
+    
+    low_band_energy = reference_params.get('low_band_energy', 0)
+    mid_band_energy = reference_params.get('mid_band_energy', 0)
+    high_band_energy = reference_params.get('high_band_energy', 0)
+    spectral_flux = reference_params.get('spectral_flux', 0)
+    
     embedding_distance = compute_embedding_distance(source_embedding, target_embedding)
     
     voice_complexity_score = 0.0
-    if formant_dispersion > 0:
-        voice_complexity_score += min(formant_dispersion / 1500.0, 1.0) * 0.3
-    if spectral_complexity > 0:
-        voice_complexity_score += min(spectral_complexity / 100.0, 1.0) * 0.3
-    if pitch_variability > 0:
-        voice_complexity_score += min(pitch_variability / 50.0, 1.0) * 0.2
     
-    embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.2
+    if formant_dispersion > 0:
+        voice_complexity_score += min(formant_dispersion / 1500.0, 1.0) * 0.20
+    if spectral_complexity > 0:
+        voice_complexity_score += min(spectral_complexity / 100.0, 1.0) * 0.20
+    if pitch_variability > 0:
+        voice_complexity_score += min(pitch_variability / 50.0, 1.0) * 0.15
+    
+    if roughness_score > 0.3:
+        voice_complexity_score += roughness_score * 0.25
+    
+    if jitter > 0.005:
+        voice_complexity_score += min((jitter - 0.005) / 0.01, 1.0) * 0.10
+    
+    if shimmer > 0.03:
+        voice_complexity_score += min((shimmer - 0.03) / 0.05, 1.0) * 0.10
+    
+    if hnr > 0 and hnr < 15:
+        hnr_penalty = (15.0 - hnr) / 15.0
+        voice_complexity_score += hnr_penalty * 0.15
+    
+    spectral_balance = 0.0
+    total_energy = low_band_energy + mid_band_energy + high_band_energy
+    if total_energy > 0:
+        spectral_balance = abs(high_band_energy / total_energy - 0.33)
+        voice_complexity_score += spectral_balance * 0.10
+    
+    if spectral_flux > 0:
+        flux_normalized = min(spectral_flux / 1e6, 1.0)
+        voice_complexity_score += flux_normalized * 0.08
+    
+    embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.12
     voice_complexity_score += embedding_similarity_bonus
     
     base_tau = 0.15
-    complexity_adjustment = voice_complexity_score * 0.20
-    distance_adjustment = embedding_distance * 0.25
+    complexity_adjustment = voice_complexity_score * 0.25
+    distance_adjustment = embedding_distance * 0.20
     
     adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
-    adaptive_tau = max(0.10, min(adaptive_tau, 0.50))
     
     confidence_factors = {
         'formant_strength': 1.0 if formant_dispersion > 500 else 0.5,
         'spectral_quality': 1.0 if spectral_complexity > 10 else 0.5,
-        'prosodic_stability': 1.0 if pitch_variability > 10 else 0.5
+        'prosodic_stability': 1.0 if pitch_variability > 10 else 0.5,
+        'voice_quality': 1.0 if (jitter > 0 and shimmer > 0 and hnr > 0) else 0.3
     }
     
     confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
     
     if confidence_score < 0.6:
-        adaptive_tau = min(adaptive_tau + 0.05, 0.50)
-    return adaptive_tau, embedding_distance, voice_complexity_score
+        adaptive_tau = min(adaptive_tau + 0.05, 0.55)
+    
+    if roughness_score > 0.5:
+        adaptive_tau = min(adaptive_tau + 0.08, 0.55)
+    
+    adaptive_tau = max(0.10, min(adaptive_tau, 0.55))
+    
+    return adaptive_tau, embedding_distance, voice_complexity_score, roughness_score
 
 
 
@@ -169,9 +209,9 @@ class VoiceCloner:
         for i, text in enumerate(calibration_texts):
             ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
             await self.tts_generator.save_with_fallback(
-                text = text,
-                preferred_voice = voice,
-                output_file = ref_path,
+                text=text,
+                preferred_voice=voice,
+                output_file=ref_path,
             )
             ref_paths.append(ref_path)
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
@@ -188,11 +228,11 @@ class VoiceCloner:
         target_text,
         gender,
         output_path,
-        voice_version = 0,
-        auto_params = True,
-        manual_pitch = None,
-        manual_speed = None,
-        manual_volume = None
+        voice_version=0,
+        auto_params=True,
+        manual_pitch=None,
+        manual_speed=None,
+        manual_volume=None
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
@@ -235,6 +275,18 @@ class VoiceCloner:
             if spectral_centroid > 0:
                 print(f"[zunel] Spectral centroid: {spectral_centroid:.0f} Hz")
             
+            jitter = params.get('jitter_local', 0)
+            shimmer = params.get('shimmer_local', 0)
+            hnr = params.get('hnr', 0)
+            roughness_score = params.get('roughness_score', 0)
+            
+            if jitter > 0 or shimmer > 0 or hnr > 0:
+                print(f"[zunel] Voice quality: Jitter={jitter:.4f}, Shimmer={shimmer:.4f}, HNR={hnr:.2f}dB")
+                print(f"[zunel] Roughness score: {roughness_score:.3f}")
+            
+            if roughness_score > 0.4:
+                print(f"[zunel] Detected rough/raspy voice characteristics")
+            
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
                 print(f"[zunel] Consider using gender='{detected_gender}' for better results")
@@ -255,12 +307,13 @@ class VoiceCloner:
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
         if auto_params:
-            adaptive_tau, emb_distance, complexity_score = compute_adaptive_tau(
+            adaptive_tau, emb_distance, complexity_score, rough_score = compute_adaptive_tau(
                 params, source_se, target_se
             )
             
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
             print(f"[zunel] Voice complexity score: {complexity_score:.4f}")
+            print(f"[zunel] Roughness score: {rough_score:.4f}")
             print(f"[zunel] Adaptive tau: {adaptive_tau:.4f}")
             tau = adaptive_tau
         else:
@@ -271,21 +324,21 @@ class VoiceCloner:
         tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis.wav')
         
         await self.tts_generator.save(
-            text = target_text,
-            voice = voice,
-            pitch = f"{pitch:+d}Hz" if pitch != 0 else "+0Hz",
-            rate = f"{speed:+d}%" if speed != 0 else "+0%",
-            volume = f"{volume:+d}%" if volume != 0 else "+0%",
-            output_file = tmp_synthesis_path
+            text=target_text,
+            voice=voice,
+            pitch=f"{pitch:+d}Hz" if pitch != 0 else "+0Hz",
+            rate=f"{speed:+d}%" if speed != 0 else "+0%",
+            volume=f"{volume:+d}%" if volume != 0 else "+0%",
+            output_file=tmp_synthesis_path
         )
         
         print("[zunel] Performing voice conversion with optimized parameters...")
         self.converter.convert(
-            audio_src_path = tmp_synthesis_path,
-            src_se = source_se,
-            tgt_se = target_se,
-            output_path = output_path,
-            tau = tau
+            audio_src_path=tmp_synthesis_path,
+            src_se=source_se,
+            tgt_se=target_se,
+            output_path=output_path,
+            tau=tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path

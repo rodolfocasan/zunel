@@ -29,15 +29,68 @@ def is_extreme_voice(pitch_hz, detected_gender):
         return pitch_hz < 190 or pitch_hz > 230
 
 
+def compute_voice_quality_metrics(audio_path):
+    sound = parselmouth.Sound(audio_path)
+    
+    pitch = sound.to_pitch_ac(
+        time_step=None,
+        pitch_floor=75.0,
+        max_number_of_candidates=15,
+        very_accurate=True,
+        silence_threshold=0.03,
+        voicing_threshold=0.45,
+        octave_cost=0.01,
+        octave_jump_cost=0.35,
+        voiced_unvoiced_cost=0.14,
+        pitch_ceiling=600.0
+    )
+    
+    point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+    
+    try:
+        local_jitter = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+        rap_jitter = call(point_process, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
+        ppq5_jitter = call(point_process, "Get jitter (ppq5)", 0, 0, 0.0001, 0.02, 1.3)
+    except:
+        local_jitter = 0.0
+        rap_jitter = 0.0
+        ppq5_jitter = 0.0
+    
+    try:
+        local_shimmer = call([sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+        apq3_shimmer = call([sound, point_process], "Get shimmer (apq3)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+        apq5_shimmer = call([sound, point_process], "Get shimmer (apq5)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    except:
+        local_shimmer = 0.0
+        apq3_shimmer = 0.0
+        apq5_shimmer = 0.0
+    
+    try:
+        harmonicity = call(sound, "To Harmonicity (cc)", 0.01, 75, 0.1, 1.0)
+        hnr = call(harmonicity, "Get mean", 0, 0)
+    except:
+        hnr = 0.0
+    
+    return {
+        'jitter_local': local_jitter,
+        'jitter_rap': rap_jitter,
+        'jitter_ppq5': ppq5_jitter,
+        'shimmer_local': local_shimmer,
+        'shimmer_apq3': apq3_shimmer,
+        'shimmer_apq5': apq5_shimmer,
+        'hnr': hnr
+    }
+
+
 def analyze_formants(audio_path):
     sound = parselmouth.Sound(audio_path)
     
     formant = sound.to_formant_burg(
-        time_step = 0.01,
-        max_number_of_formants = 5,
-        maximum_formant = 5500.0,
-        window_length = 0.025,
-        pre_emphasis_from = 50.0
+        time_step=0.01,
+        max_number_of_formants=5,
+        maximum_formant=5500.0,
+        window_length=0.025,
+        pre_emphasis_from=50.0
     )
     
     f1_values = []
@@ -86,10 +139,10 @@ def compute_spectral_envelope_complexity(audio_path):
     
     try:
         lpc = sound.to_lpc_burg(
-            prediction_order = 16,
-            window_length = 0.025,
-            time_step = 0.01,
-            pre_emphasis_frequency = 50.0
+            prediction_order=16,
+            window_length=0.025,
+            time_step=0.01,
+            pre_emphasis_frequency=50.0
         )
         
         n_frames = call(lpc, "Get number of frames")
@@ -137,20 +190,77 @@ def compute_spectral_centroid(audio_path):
         return 0.0
 
 
+def compute_multi_scale_spectral_features(audio_path):
+    try:
+        data, sr = sf.read(audio_path)
+        if len(data.shape) > 1:
+            data = data[:, 0]
+        
+        fft = np.fft.rfft(data)
+        magnitude = np.abs(fft)
+        freqs = np.fft.rfftfreq(len(data), 1.0 / sr)
+        
+        low_band = (freqs >= 80) & (freqs < 500)
+        mid_band = (freqs >= 500) & (freqs < 2000)
+        high_band = (freqs >= 2000) & (freqs < 8000)
+        
+        low_energy = np.sum(magnitude[low_band]) / (np.sum(low_band) + 1e-8)
+        mid_energy = np.sum(magnitude[mid_band]) / (np.sum(mid_band) + 1e-8)
+        high_energy = np.sum(magnitude[high_band]) / (np.sum(high_band) + 1e-8)
+        
+        spectral_rolloff = freqs[np.where(np.cumsum(magnitude) >= 0.85 * np.sum(magnitude))[0][0]]
+        
+        spectral_flux = 0.0
+        if len(data) > sr:
+            frame_size = int(sr * 0.025)
+            hop_size = int(sr * 0.010)
+            fluxes = []
+            
+            for i in range(0, len(data) - frame_size, hop_size):
+                frame1 = data[i:i+frame_size]
+                frame2 = data[i+hop_size:i+hop_size+frame_size]
+                
+                spec1 = np.abs(np.fft.rfft(frame1))
+                spec2 = np.abs(np.fft.rfft(frame2))
+                
+                flux = np.sum((spec2 - spec1) ** 2)
+                fluxes.append(flux)
+            
+            if fluxes:
+                spectral_flux = np.mean(fluxes)
+        
+        return {
+            'low_band_energy': low_energy,
+            'mid_band_energy': mid_energy,
+            'high_band_energy': high_energy,
+            'spectral_rolloff': spectral_rolloff,
+            'spectral_flux': spectral_flux
+        }
+    except Exception as e:
+        print(f"[zunel] Multi-scale spectral error: {e}")
+        return {
+            'low_band_energy': 0.0,
+            'mid_band_energy': 0.0,
+            'high_band_energy': 0.0,
+            'spectral_rolloff': 0.0,
+            'spectral_flux': 0.0
+        }
+
+
 def analyze_pitch(audio_path):
     sound = parselmouth.Sound(audio_path)
     
     pitch = sound.to_pitch_ac(
-        time_step = None,
-        pitch_floor = 75.0,
-        max_number_of_candidates = 15,
-        very_accurate = True,
-        silence_threshold = 0.03,
-        voicing_threshold = 0.45,
-        octave_cost = 0.01,
-        octave_jump_cost = 0.35,
-        voiced_unvoiced_cost = 0.14,
-        pitch_ceiling = 600.0
+        time_step=None,
+        pitch_floor=75.0,
+        max_number_of_candidates=15,
+        very_accurate=True,
+        silence_threshold=0.03,
+        voicing_threshold=0.45,
+        octave_cost=0.01,
+        octave_jump_cost=0.35,
+        voiced_unvoiced_cost=0.14,
+        pitch_ceiling=600.0
     )
     
     pitch_values = pitch.selected_array['frequency']
@@ -231,6 +341,27 @@ def analyze_volume(audio_path):
         return REFERENCE_LOUDNESS_LUFS
 
 
+def compute_voice_roughness_score(voice_quality):
+    jitter_weight = 0.3
+    shimmer_weight = 0.3
+    hnr_weight = 0.4
+    
+    jitter_score = min(voice_quality['jitter_local'] / 0.01, 1.0)
+    shimmer_score = min(voice_quality['shimmer_local'] / 0.05, 1.0)
+    
+    hnr_val = voice_quality['hnr']
+    if hnr_val > 0:
+        hnr_score = max(0, 1.0 - (hnr_val / 20.0))
+    else:
+        hnr_score = 1.0
+    
+    roughness = (jitter_score * jitter_weight + 
+                 shimmer_score * shimmer_weight + 
+                 hnr_score * hnr_weight)
+    
+    return roughness
+
+
 def analyze_audio(audio_path):
     pitch_hz, detected_gender, is_extreme, pitch_range, pitch_variability = analyze_pitch(audio_path)
     speech_rate = analyze_speed(audio_path)
@@ -238,6 +369,10 @@ def analyze_audio(audio_path):
     formant_data = analyze_formants(audio_path)
     spectral_envelope_complexity = compute_spectral_envelope_complexity(audio_path)
     spectral_centroid = compute_spectral_centroid(audio_path)
+    voice_quality = compute_voice_quality_metrics(audio_path)
+    multi_scale_features = compute_multi_scale_spectral_features(audio_path)
+    
+    roughness_score = compute_voice_roughness_score(voice_quality)
     
     return {
         'pitch_hz': pitch_hz,
@@ -255,5 +390,18 @@ def analyze_audio(audio_path):
         'formant_f2_std': formant_data['f2_std'],
         'formant_dispersion': formant_data['formant_dispersion'],
         'spectral_envelope_complexity': spectral_envelope_complexity,
-        'spectral_centroid': spectral_centroid
+        'spectral_centroid': spectral_centroid,
+        'jitter_local': voice_quality['jitter_local'],
+        'jitter_rap': voice_quality['jitter_rap'],
+        'jitter_ppq5': voice_quality['jitter_ppq5'],
+        'shimmer_local': voice_quality['shimmer_local'],
+        'shimmer_apq3': voice_quality['shimmer_apq3'],
+        'shimmer_apq5': voice_quality['shimmer_apq5'],
+        'hnr': voice_quality['hnr'],
+        'roughness_score': roughness_score,
+        'low_band_energy': multi_scale_features['low_band_energy'],
+        'mid_band_energy': multi_scale_features['mid_band_energy'],
+        'high_band_energy': multi_scale_features['high_band_energy'],
+        'spectral_rolloff': multi_scale_features['spectral_rolloff'],
+        'spectral_flux': multi_scale_features['spectral_flux']
     }
