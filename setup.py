@@ -28,8 +28,7 @@ setup(
         "pykakasi",
         "jamo",
         "praat-parselmouth",
-        "pyloudnorm",
-        "scipy"
+        "pyloudnorm"
     ],
     python_requires = ">=3.8",
 )

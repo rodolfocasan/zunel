@@ -52,23 +52,10 @@ class TimbreConverter(SynthBase):
         super().__init__(*args, **kwargs)
         self.version = getattr(self.cfg, '_release_', "1.0.0")
 
-    def extract_se(self, ref_wav_list, se_save_path=None, use_perturbation=False):
+    def extract_se(self, ref_wav_list, se_save_path=None, use_enhancement=True):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
 
-        if use_perturbation:
-            try:
-                from zunel.perturbation import extract_robust_embedding_multi_sample
-                print("[zunel] Using perturbation-based robust embedding extraction...")
-                result = extract_robust_embedding_multi_sample(ref_wav_list, self, num_perturbations=3)
-                
-                if se_save_path is not None:
-                    os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
-                    torch.save(result.cpu(), se_save_path)
-                return result
-            except Exception as e:
-                print(f"[zunel] Perturbation failed ({e}), falling back to standard extraction")
-        
         embeddings = []
         for fname in ref_wav_list:
             audio_ref, sr = librosa.load(fname, sr=self.cfg.audio.sample_rate)
@@ -83,7 +70,13 @@ class TimbreConverter(SynthBase):
                 g = self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
                 embeddings.append(g.detach())
 
-        result = torch.stack(embeddings).mean(0)
+        if use_enhancement and len(embeddings) > 1:
+            from zunel.timbre_enhancement import TimbreEnhancer
+            enhancer = TimbreEnhancer()
+            result = enhancer.enhance_embeddings(embeddings, use_quality_weighting=True)
+        else:
+            result = torch.stack(embeddings).mean(0)
+            
         if se_save_path is not None:
             os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
             torch.save(result.cpu(), se_save_path)
@@ -108,12 +101,6 @@ class TimbreConverter(SynthBase):
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
-    def compute_embedding_similarity(self, emb1, emb2):
-        emb1_norm = emb1 / (torch.norm(emb1, dim=0, keepdim=True) + 1e-8)
-        emb2_norm = emb2 / (torch.norm(emb2, dim=0, keepdim=True) + 1e-8)
-        similarity = torch.sum(emb1_norm * emb2_norm)
-        return similarity.item()
-
 
 
 
@@ -130,12 +117,15 @@ class VoiceCloner:
             shutil.rmtree(self.temp_dir)
             print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
 
-    async def generate_source_embedding(self, target_language, gender, voice_version=0):
+    async def generate_source_embedding(self, target_language, gender, voice_version=0, num_samples=4):
         voice = voice_config.get_voice(target_language, gender, voice_version)
         calibration_texts = voice_config.get_calibration_texts(target_language)
         
+        num_samples = min(num_samples, len(calibration_texts))
+        
         ref_paths = []
-        for i, text in enumerate(calibration_texts):
+        for i in range(num_samples):
+            text = calibration_texts[i]
             ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
             await self.tts_generator.save_with_fallback(
                 text = text,
@@ -143,11 +133,11 @@ class VoiceCloner:
                 output_file = ref_path,
             )
             ref_paths.append(ref_path)
-            print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
+            print(f"[zunel] Generated calibration sample {i + 1}/{num_samples}")
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
-        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_perturbation=False)
-        print(f"[zunel] Created embedding for {target_language}/{gender}")
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_enhancement=True)
+        print(f"[zunel] Created enhanced multi-reference embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
     async def clone_voice(
@@ -163,21 +153,38 @@ class VoiceCloner:
         manual_speed = None,
         manual_volume = None,
         tau = None,
-        use_perturbation = False
+        num_reference_samples = 4
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
-        print(f"[zunel] Starting voice cloning process...")
+        print(f"[zunel] Starting enhanced voice cloning process...")
         print(f"[zunel] Reference: {reference_audio_path}")
         print(f"[zunel] Target language: {target_language}")
         print(f"[zunel] Gender: {gender}")
         
-        if use_perturbation:
-            print("[zunel] Extracting robust target speaker embedding with perturbation...")
-        else:
-            print("[zunel] Extracting target speaker embedding...")
-        target_se = self.converter.extract_se([reference_audio_path], use_perturbation=use_perturbation)
+        from zunel.timbre_enhancement import extract_timbre_specific_features
+        
+        try:
+            audio_ref, sr = librosa.load(reference_audio_path, sr=self.converter.cfg.audio.sample_rate)
+            y_ref = torch.FloatTensor(audio_ref).unsqueeze(0).to(self.converter.device)
+            spec_ref = compute_spectrogram(
+                y_ref,
+                self.converter.cfg.audio.fft_size,
+                self.converter.cfg.audio.sample_rate,
+                self.converter.cfg.audio.frame_shift,
+                self.converter.cfg.audio.frame_length,
+                center = False
+            )
+            
+            timbre_features = extract_timbre_specific_features(spec_ref)
+            print(f"[zunel] Extracted timbre features:")
+            print(f"  - Spectral centroid: {timbre_features['spectral_centroid']:.2f}")
+            print(f"  - Harmonic content: {timbre_features['harmonic_content']:.2f}")
+        except Exception as e:
+            print(f"[zunel] Warning: Could not extract detailed timbre features: {e}")
+        
+        target_se = self.converter.extract_se([reference_audio_path], use_enhancement=False)
         
         if auto_params:
             print("[zunel] Analyzing reference audio...")
@@ -222,10 +229,9 @@ class VoiceCloner:
             print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
             print(f"[zunel] Using tau={tau}")
         
-        source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
-        
-        similarity = self.converter.compute_embedding_similarity(source_se, target_se)
-        print(f"[zunel] Source-Target embedding similarity: {similarity:.4f}")
+        source_se, _ = await self.generate_source_embedding(
+            target_language, gender, voice_version, num_samples=num_reference_samples
+        )
         
         voice = voice_config.get_voice(target_language, gender, voice_version)
         tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis.wav')
@@ -239,7 +245,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion...")
+        print("[zunel] Performing voice conversion with enhanced timbre preservation...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,

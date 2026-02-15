@@ -93,7 +93,6 @@ class StochasticTemporalPredictor(nn.Module):
         self.log_flow = layers.LogLayer()
         self.flows = nn.ModuleList()
         self.flows.append(layers.AffineLayer(2))
-        
         for i in range(n_flows):
             self.flows.append(layers.SplineFlow(2, filter_channels, kernel_size, n_layers=3))
             self.flows.append(layers.FlipLayer())
@@ -121,7 +120,6 @@ class StochasticTemporalPredictor(nn.Module):
         
         if g is not None:
             x = x + self.cond(torch.detach(g))
-        
         x = self.proj(self.convs(x, x_mask)) * x_mask
 
         if not reverse:
@@ -314,7 +312,6 @@ class NormalizingFlowBlock(nn.Module):
         self.gin_channels = gin_channels
 
         self.flows = nn.ModuleList()
-        
         for i in range(n_flows):
             self.flows.append(
                 layers.CouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True)
