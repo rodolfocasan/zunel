@@ -10,6 +10,7 @@ from zunel import layers
 from zunel import helpers
 from zunel import attention
 from zunel.helpers import initialize_weights, compute_padding
+from zunel.speaker_encoder import ImprovedSpeakerEmbedder
 
 
 
@@ -68,6 +69,7 @@ class TemporalPredictor(nn.Module):
 
     def forward(self, x, x_mask, g=None):
         x = torch.detach(x)
+        
         if g is not None:
             x = x + self.cond(torch.detach(g))
         
@@ -93,6 +95,7 @@ class StochasticTemporalPredictor(nn.Module):
         self.log_flow = layers.LogLayer()
         self.flows = nn.ModuleList()
         self.flows.append(layers.AffineLayer(2))
+        
         for i in range(n_flows):
             self.flows.append(layers.SplineFlow(2, filter_channels, kernel_size, n_layers=3))
             self.flows.append(layers.FlipLayer())
@@ -258,48 +261,6 @@ class WaveDecoder(torch.nn.Module):
 
 
 
-class SpeakerEmbedder(nn.Module):
-    def __init__(self, spec_channels, gin_channels=0, layernorm=True):
-        super().__init__()
-        self.spec_channels = spec_channels
-        ref_filters = [32, 32, 64, 64, 128, 128]
-        K = len(ref_filters)
-        filter_seq = [1] + ref_filters
-        self.convs = nn.ModuleList([
-            weight_norm(nn.Conv2d(filter_seq[i], filter_seq[i + 1], (3, 3), (2, 2), (1, 1)))
-            for i in range(K)
-        ])
-        out_channels = self._calc_channels(spec_channels, 3, 2, 1, K)
-        self.gru = nn.GRU(ref_filters[-1] * out_channels, 256 // 2, batch_first=True)
-        self.proj = nn.Linear(128, gin_channels)
-        self.layernorm = nn.LayerNorm(self.spec_channels) if layernorm else None
-
-    def forward(self, inputs, mask=None):
-        N = inputs.size(0)
-        out = inputs.view(N, 1, -1, self.spec_channels)
-        
-        if self.layernorm is not None:
-            out = self.layernorm(out)
-        
-        for conv in self.convs:
-            out = F.relu(conv(out))
-        
-        out = out.transpose(1, 2)
-        T, N2 = out.size(1), out.size(0)
-        out = out.contiguous().view(N2, T, -1)
-        self.gru.flatten_parameters()
-        _, out = self.gru(out)
-        return self.proj(out.squeeze(0))
-
-    def _calc_channels(self, L, kernel_size, stride, pad, n_convs):
-        for _ in range(n_convs):
-            L = (L - kernel_size + 2 * pad) // stride + 1
-        return L
-
-
-
-
-
 class NormalizingFlowBlock(nn.Module):
     def __init__(self, channels, hidden_channels, kernel_size, dilation_rate, n_layers, n_flows=4, gin_channels=0):
         super().__init__()
@@ -353,6 +314,7 @@ class VoiceSynthesizer(nn.Module):
         n_speakers = 256,
         embedding_dim = 256,
         zero_g = False,
+        use_improved_embedder = True,
         **kwargs
     ):
         super().__init__()
@@ -367,7 +329,10 @@ class VoiceSynthesizer(nn.Module):
         self.n_speakers = n_speakers
 
         if n_speakers == 0:
-            self.speaker_embedder = SpeakerEmbedder(spec_channels, embedding_dim)
+            if use_improved_embedder:
+                self.speaker_embedder = ImprovedSpeakerEmbedder(spec_channels, embedding_dim)
+            else:
+                self.speaker_embedder = SpeakerEmbedder(spec_channels, embedding_dim)
         else:
             self.enc_p = PhoneticEncoder(n_vocab, latent_channels, base_channels, expansion_channels, attention_heads, encoder_layers, conv_kernel, dropout_rate)
             self.sdp = StochasticTemporalPredictor(base_channels, 192, 3, 0.5, 4, gin_channels=embedding_dim)
@@ -425,3 +390,45 @@ class VoiceSynthesizer(nn.Module):
             g = g_dec,
         )
         return o_hat, y_mask, (z, z_p, z_hat)
+
+
+
+
+
+class SpeakerEmbedder(nn.Module):
+    def __init__(self, spec_channels, gin_channels=0, layernorm=True):
+        super().__init__()
+        self.spec_channels = spec_channels
+        ref_filters = [32, 32, 64, 64, 128, 128]
+        K = len(ref_filters)
+        filter_seq = [1] + ref_filters
+        self.convs = nn.ModuleList([
+            weight_norm(nn.Conv2d(filter_seq[i], filter_seq[i + 1], (3, 3), (2, 2), (1, 1)))
+            for i in range(K)
+        ])
+        out_channels = self._calc_channels(spec_channels, 3, 2, 1, K)
+        self.gru = nn.GRU(ref_filters[-1] * out_channels, 256 // 2, batch_first=True)
+        self.proj = nn.Linear(128, gin_channels)
+        self.layernorm = nn.LayerNorm(self.spec_channels) if layernorm else None
+
+    def forward(self, inputs, mask=None):
+        N = inputs.size(0)
+        out = inputs.view(N, 1, -1, self.spec_channels)
+        
+        if self.layernorm is not None:
+            out = self.layernorm(out)
+        
+        for conv in self.convs:
+            out = F.relu(conv(out))
+        
+        out = out.transpose(1, 2)
+        T, N2 = out.size(1), out.size(0)
+        out = out.contiguous().view(N2, T, -1)
+        self.gru.flatten_parameters()
+        _, out = self.gru(out)
+        return self.proj(out.squeeze(0))
+
+    def _calc_channels(self, L, kernel_size, stride, pad, n_convs):
+        for _ in range(n_convs):
+            L = (L - kernel_size + 2 * pad) // stride + 1
+        return L

@@ -7,7 +7,7 @@ from setuptools import setup, find_packages
 
 setup(
     name = "zunel",
-    version = "1.0.1",
+    version = "1.0.2",
     packages = find_packages(),
     install_requires = [
         "torch>=2.0.0",
@@ -28,7 +28,8 @@ setup(
         "pykakasi",
         "jamo",
         "praat-parselmouth",
-        "pyloudnorm"
+        "pyloudnorm",
+        "scipy"
     ],
     python_requires = ">=3.8",
 )

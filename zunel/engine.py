@@ -13,6 +13,7 @@ from zunel import voice_config
 from zunel import audio_analysis
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
+from zunel.perturbation import extract_robust_embedding_multi_sample
 
 
 
@@ -29,6 +30,7 @@ class SynthBase(object):
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
             n_speakers = cfg.audio.num_speakers,
+            use_improved_embedder = True,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -52,10 +54,19 @@ class TimbreConverter(SynthBase):
         super().__init__(*args, **kwargs)
         self.version = getattr(self.cfg, '_release_', "1.0.0")
 
-    def extract_se(self, ref_wav_list, se_save_path=None):
+    def extract_se(self, ref_wav_list, se_save_path=None, use_perturbation=False):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
 
+        if use_perturbation:
+            print("[zunel] Using perturbation-based robust embedding extraction...")
+            result = extract_robust_embedding_multi_sample(ref_wav_list, self, num_perturbations=3)
+            
+            if se_save_path is not None:
+                os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
+                torch.save(result.cpu(), se_save_path)
+            return result
+        
         embeddings = []
         for fname in ref_wav_list:
             audio_ref, sr = librosa.load(fname, sr=self.cfg.audio.sample_rate)
@@ -95,6 +106,12 @@ class TimbreConverter(SynthBase):
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
+    def compute_embedding_similarity(self, emb1, emb2):
+        emb1_norm = emb1 / (torch.norm(emb1, dim=0, keepdim=True) + 1e-8)
+        emb2_norm = emb2 / (torch.norm(emb2, dim=0, keepdim=True) + 1e-8)
+        similarity = torch.sum(emb1_norm * emb2_norm)
+        return similarity.item()
+
 
 
 
@@ -127,8 +144,8 @@ class VoiceCloner:
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
-        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
-        print(f"[zunel] Created embedding for {target_language}/{gender}")
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_perturbation=True)
+        print(f"[zunel] Created robust embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
     async def clone_voice(
@@ -148,12 +165,13 @@ class VoiceCloner:
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
-        print(f"[zunel] Starting voice cloning process...")
+        print(f"[zunel] Starting enhanced voice cloning process...")
         print(f"[zunel] Reference: {reference_audio_path}")
         print(f"[zunel] Target language: {target_language}")
         print(f"[zunel] Gender: {gender}")
         
-        target_se = self.converter.extract_se([reference_audio_path])
+        print("[zunel] Extracting robust target speaker embedding with perturbation...")
+        target_se = self.converter.extract_se([reference_audio_path], use_perturbation=True)
         
         if auto_params:
             print("[zunel] Analyzing reference audio...")
@@ -200,6 +218,9 @@ class VoiceCloner:
         
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
+        similarity = self.converter.compute_embedding_similarity(source_se, target_se)
+        print(f"[zunel] Source-Target embedding similarity: {similarity:.4f}")
+        
         voice = voice_config.get_voice(target_language, gender, voice_version)
         tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis.wav')
         
@@ -212,7 +233,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion...")
+        print("[zunel] Performing voice conversion with enhanced embeddings...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,
