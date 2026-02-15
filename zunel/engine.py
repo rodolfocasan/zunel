@@ -13,7 +13,6 @@ from zunel import voice_config
 from zunel import audio_analysis
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
-from zunel.perturbation import extract_robust_embedding_multi_sample
 
 
 
@@ -30,7 +29,6 @@ class SynthBase(object):
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
             n_speakers = cfg.audio.num_speakers,
-            use_improved_embedder = True,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -59,13 +57,17 @@ class TimbreConverter(SynthBase):
             ref_wav_list = [ref_wav_list]
 
         if use_perturbation:
-            print("[zunel] Using perturbation-based robust embedding extraction...")
-            result = extract_robust_embedding_multi_sample(ref_wav_list, self, num_perturbations=3)
-            
-            if se_save_path is not None:
-                os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
-                torch.save(result.cpu(), se_save_path)
-            return result
+            try:
+                from zunel.perturbation import extract_robust_embedding_multi_sample
+                print("[zunel] Using perturbation-based robust embedding extraction...")
+                result = extract_robust_embedding_multi_sample(ref_wav_list, self, num_perturbations=3)
+                
+                if se_save_path is not None:
+                    os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
+                    torch.save(result.cpu(), se_save_path)
+                return result
+            except Exception as e:
+                print(f"[zunel] Perturbation failed ({e}), falling back to standard extraction")
         
         embeddings = []
         for fname in ref_wav_list:
@@ -144,8 +146,8 @@ class VoiceCloner:
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
         
         embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
-        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_perturbation=True)
-        print(f"[zunel] Created robust embedding for {target_language}/{gender}")
+        embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path, use_perturbation=False)
+        print(f"[zunel] Created embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
 
     async def clone_voice(
@@ -160,18 +162,22 @@ class VoiceCloner:
         manual_pitch = None,
         manual_speed = None,
         manual_volume = None,
-        tau = None
+        tau = None,
+        use_perturbation = False
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
         
-        print(f"[zunel] Starting enhanced voice cloning process...")
+        print(f"[zunel] Starting voice cloning process...")
         print(f"[zunel] Reference: {reference_audio_path}")
         print(f"[zunel] Target language: {target_language}")
         print(f"[zunel] Gender: {gender}")
         
-        print("[zunel] Extracting robust target speaker embedding with perturbation...")
-        target_se = self.converter.extract_se([reference_audio_path], use_perturbation=True)
+        if use_perturbation:
+            print("[zunel] Extracting robust target speaker embedding with perturbation...")
+        else:
+            print("[zunel] Extracting target speaker embedding...")
+        target_se = self.converter.extract_se([reference_audio_path], use_perturbation=use_perturbation)
         
         if auto_params:
             print("[zunel] Analyzing reference audio...")
@@ -233,7 +239,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion with enhanced embeddings...")
+        print("[zunel] Performing voice conversion...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,

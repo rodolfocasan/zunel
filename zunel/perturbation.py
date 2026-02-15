@@ -1,8 +1,6 @@
 # zunel/perturbation.py
-import librosa
 import numpy as np
-import soundfile as sf
-from scipy import signal
+import librosa
 
 import torch
 
@@ -43,6 +41,7 @@ class AudioPerturbation:
         
         D_shifted = mag_shifted * np.exp(1j * phase)
         audio_shifted = librosa.istft(D_shifted, hop_length=hop_length)
+        
         return audio_shifted
 
     @staticmethod
@@ -58,6 +57,7 @@ class AudioPerturbation:
         
         if 'formant_shift' in config and abs(config['formant_shift'] - 1.0) > 0.01:
             audio = AudioPerturbation.formant_shift(audio, sr, config['formant_shift'])
+        
         return audio
 
 
