@@ -108,7 +108,10 @@ def compute_embedding_distance(embedding1, embedding2):
     return distance
 
 
-def compute_adaptive_tau(reference_params, source_embedding, target_embedding, is_same_language=False):
+def compute_adaptive_tau(reference_params, source_embedding, target_embedding, same_language=False):
+    if same_language:
+        return 0.05, 0.0, 0.0, 0.0
+    
     formant_dispersion = reference_params.get('formant_dispersion', 0)
     spectral_complexity = reference_params.get('spectral_envelope_complexity', 0)
     pitch_variability = reference_params.get('pitch_variability', 0)
@@ -160,125 +163,46 @@ def compute_adaptive_tau(reference_params, source_embedding, target_embedding, i
     embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.12
     voice_complexity_score += embedding_similarity_bonus
     
-    if is_same_language:
-        base_tau = 0.08
-        complexity_adjustment = voice_complexity_score * 0.12
-        distance_adjustment = embedding_distance * 0.08
-        
-        adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
-        
-        if roughness_score > 0.5:
-            adaptive_tau = min(adaptive_tau + 0.04, 0.20)
-        
-        adaptive_tau = max(0.05, min(adaptive_tau, 0.20))
-    else:
-        base_tau = 0.15
-        complexity_adjustment = voice_complexity_score * 0.25
-        distance_adjustment = embedding_distance * 0.20
-        
-        adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
-        
-        confidence_factors = {
-            'formant_strength': 1.0 if formant_dispersion > 500 else 0.5,
-            'spectral_quality': 1.0 if spectral_complexity > 10 else 0.5,
-            'prosodic_stability': 1.0 if pitch_variability > 10 else 0.5,
-            'voice_quality': 1.0 if (jitter > 0 and shimmer > 0 and hnr > 0) else 0.3
-        }
-        
-        confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
-        
-        if confidence_score < 0.6:
-            adaptive_tau = min(adaptive_tau + 0.05, 0.55)
-        
-        if roughness_score > 0.5:
-            adaptive_tau = min(adaptive_tau + 0.08, 0.55)
-        
-        adaptive_tau = max(0.10, min(adaptive_tau, 0.55))
+    base_tau = 0.15
+    complexity_adjustment = voice_complexity_score * 0.25
+    distance_adjustment = embedding_distance * 0.20
     
+    adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
+    
+    confidence_factors = {
+        'formant_strength': 1.0 if formant_dispersion > 500 else 0.5,
+        'spectral_quality': 1.0 if spectral_complexity > 10 else 0.5,
+        'prosodic_stability': 1.0 if pitch_variability > 10 else 0.5,
+        'voice_quality': 1.0 if (jitter > 0 and shimmer > 0 and hnr > 0) else 0.3
+    }
+    
+    confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
+    
+    if confidence_score < 0.6:
+        adaptive_tau = min(adaptive_tau + 0.05, 0.55)
+    
+    if roughness_score > 0.5:
+        adaptive_tau = min(adaptive_tau + 0.08, 0.55)
+    
+    adaptive_tau = max(0.10, min(adaptive_tau, 0.55))
     return adaptive_tau, embedding_distance, voice_complexity_score, roughness_score
 
 
-def normalize_language_code(language_code):
-    normalized = language_code.lower().strip()
-    
-    language_mapping = {
-        'spanish': 'es-latino',
-        'español': 'es-latino',
-        'es': 'es-latino',
-        'es-latin': 'es-latino',
-        'es-la': 'es-latino',
-        'es-mx': 'es-latino',
-        'es-ar': 'es-latino',
-        'es-cl': 'es-latino',
-        'spanish-latino': 'es-latino',
-        'spanish-latam': 'es-latino',
-        
-        'spanish-spain': 'es-spain',
-        'es-es': 'es-spain',
-        'español-españa': 'es-spain',
-        
-        'english': 'en',
-        'inglés': 'en',
-        'en-us': 'en',
-        'en-gb': 'en',
-        
-        'french': 'fr',
-        'francés': 'fr',
-        'français': 'fr',
-        'fr-fr': 'fr',
-        'fr-ca': 'fr',
-        
-        'german': 'de',
-        'alemán': 'de',
-        'deutsch': 'de',
-        'de-de': 'de',
-        
-        'portuguese': 'pt',
-        'portugués': 'pt',
-        'português': 'pt',
-        'pt-br': 'pt',
-        'pt-pt': 'pt',
-        
-        'russian': 'ru',
-        'ruso': 'ru',
-        'ru-ru': 'ru',
-        
-        'japanese': 'ja',
-        'japonés': 'ja',
-        '日本語': 'ja',
-        'ja-jp': 'ja',
-        
-        'korean': 'ko',
-        'coreano': 'ko',
-        '한국어': 'ko',
-        'ko-kr': 'ko',
-        
-        'chinese': 'zh',
-        'chino': 'zh',
-        '中文': 'zh',
-        'zh-cn': 'zh',
-        'zh-tw': 'zh',
-        'mandarin': 'zh',
+def normalize_language_code(lang_code):
+    lang_map = {
+        'es-latino': 'es',
+        'es-spain': 'es',
+        'es': 'es',
+        'en': 'en',
+        'fr': 'fr',
+        'de': 'de',
+        'pt': 'pt',
+        'ru': 'ru',
+        'ja': 'ja',
+        'ko': 'ko',
+        'zh': 'zh'
     }
-    
-    normalized = language_mapping.get(normalized, normalized)
-    
-    if normalized not in voice_config.VOICE_REGISTRY:
-        available = list(voice_config.VOICE_REGISTRY.keys())
-        raise ValueError(f"[zunel] Language '{language_code}' (normalized to '{normalized}') not supported. Available: {available}")
-    
-    return normalized
-
-
-def languages_match(input_lang, target_lang):
-    if input_lang == target_lang:
-        return True
-    
-    spanish_variants = {'es-latino', 'es-spain'}
-    if input_lang in spanish_variants and target_lang in spanish_variants:
-        return True
-    
-    return False
+    return lang_map.get(lang_code, lang_code)
 
 
 
@@ -296,19 +220,13 @@ class VoiceCloner:
             shutil.rmtree(self.temp_dir)
             print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
 
-    async def generate_source_embedding(self, target_language, gender, voice_version=0, use_bridge_language=False):
-        effective_language = target_language
-        
-        if use_bridge_language:
-            effective_language = 'en'
-            print(f"[zunel] Using bridge language strategy: generating source with '{effective_language}' instead of '{target_language}'")
-        
-        voice = voice_config.get_voice(effective_language, gender, voice_version)
-        calibration_texts = voice_config.get_calibration_texts(effective_language)
+    async def generate_source_embedding(self, target_language, gender, voice_version=0):
+        voice = voice_config.get_voice(target_language, gender, voice_version)
+        calibration_texts = voice_config.get_calibration_texts(target_language)
         
         ref_paths = []
         for i, text in enumerate(calibration_texts):
-            ref_path = os.path.join(self.temp_dir, f'ref_{effective_language}_{gender}_{i}.wav')
+            ref_path = os.path.join(self.temp_dir, f'ref_{target_language}_{gender}_{i}.wav')
             await self.tts_generator.save_with_fallback(
                 text=text,
                 preferred_voice=voice,
@@ -317,15 +235,75 @@ class VoiceCloner:
             ref_paths.append(ref_path)
             print(f"[zunel] Generated calibration sample {i + 1}/{len(calibration_texts)}")
         
-        embedding_path = os.path.join(self.temp_dir, f'embedding_{effective_language}_{gender}.pth')
+        embedding_path = os.path.join(self.temp_dir, f'embedding_{target_language}_{gender}.pth')
         embedding = self.converter.extract_se(ref_paths, se_save_path=embedding_path)
-        print(f"[zunel] Created embedding for {effective_language}/{gender}")
+        print(f"[zunel] Created embedding for {target_language}/{gender}")
         return embedding, ref_paths[0]
+
+    async def clone_voice_same_language(
+        self,
+        reference_audio_path,
+        target_language,
+        target_text,
+        gender,
+        output_path,
+        voice_version=0,
+        reference_params=None
+    ):
+        print("[zunel] Using SAME LANGUAGE optimization path")
+        print("[zunel] Preserving identity via direct synthesis")
+        
+        target_se = self.converter.extract_se([reference_audio_path])
+        
+        voice = voice_config.get_voice(target_language, gender, voice_version)
+        tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis_same_lang.wav')
+        
+        pitch = 0
+        speed = 0
+        volume = 0
+        
+        if reference_params:
+            pitch_hz = reference_params.get('pitch_hz', 0)
+            if pitch_hz > 0:
+                gender_avg = 120.0 if gender == 'male' else 210.0
+                pitch_diff = int(pitch_hz - gender_avg)
+                pitch = max(-50, min(50, pitch_diff))
+            
+            speech_rate = reference_params.get('speech_rate_sps', 0)
+            if speech_rate > 0:
+                speed_factor = (speech_rate / 4.5) - 1.0
+                speed = int(speed_factor * 100)
+                speed = max(-30, min(30, speed))
+            
+            loudness = reference_params.get('loudness_lufs', -20)
+            volume_diff = int(loudness - (-20))
+            volume = max(-15, min(15, volume_diff))
+            
+            print(f"[zunel] Adjusted params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
+        
+        await self.tts_generator.save(
+            text=target_text,
+            voice=voice,
+            pitch=f"{pitch:+d}Hz" if pitch != 0 else "+0Hz",
+            rate=f"{speed:+d}%" if speed != 0 else "+0%",
+            volume=f"{volume:+d}%" if volume != 0 else "+0%",
+            output_file=tmp_synthesis_path
+        )
+        
+        print("[zunel] Applying minimal voice conversion (tau=0.05)")
+        self.converter.convert(
+            audio_src_path=tmp_synthesis_path,
+            src_se=target_se,
+            tgt_se=target_se,
+            output_path=output_path,
+            tau=0.05
+        )
+        
+        return output_path
 
     async def clone_voice(
         self,
         reference_audio_path,
-        input_language,
         target_language,
         target_text,
         gender,
@@ -334,25 +312,19 @@ class VoiceCloner:
         auto_params=True,
         manual_pitch=None,
         manual_speed=None,
-        manual_volume=None
+        manual_volume=None,
+        input_language=None
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
-        
-        input_language = normalize_language_code(input_language)
-        target_language = normalize_language_code(target_language)
-        
-        is_same_language = languages_match(input_language, target_language)
         
         print(f"[zunel] Starting voice cloning process...")
         print(f"[zunel] Reference: {reference_audio_path}")
         print(f"[zunel] Input language: {input_language}")
         print(f"[zunel] Target language: {target_language}")
-        print(f"[zunel] Same language conversion: {is_same_language}")
         print(f"[zunel] Gender: {gender}")
         
-        target_se = self.converter.extract_se([reference_audio_path])
-        
+        params = None
         if auto_params:
             print("[zunel] Analyzing reference audio...")
             params = audio_analysis.analyze_audio(reference_audio_path)
@@ -402,7 +374,28 @@ class VoiceCloner:
             
             if is_extreme:
                 print(f"[zunel] WARNING: Detected extreme voice characteristics")
+        
+        if input_language:
+            input_lang_normalized = normalize_language_code(input_language)
+            target_lang_normalized = normalize_language_code(target_language)
             
+            if input_lang_normalized == target_lang_normalized:
+                print(f"\n[zunel] SAME LANGUAGE DETECTED: {input_language} -> {target_language}")
+                return await self.clone_voice_same_language(
+                    reference_audio_path=reference_audio_path,
+                    target_language=target_language,
+                    target_text=target_text,
+                    gender=gender,
+                    output_path=output_path,
+                    voice_version=voice_version,
+                    reference_params=params
+                )
+            else:
+                print(f"\n[zunel] CROSS-LANGUAGE DETECTED: {input_language} -> {target_language}")
+        
+        target_se = self.converter.extract_se([reference_audio_path])
+        
+        if auto_params:
             pitch = 0
             speed = 0
             volume = 0
@@ -413,40 +406,23 @@ class VoiceCloner:
             volume = manual_volume if manual_volume is not None else 0
             print(f"[zunel] Using manual params: pitch={pitch:+d}Hz, speed={speed:+d}%, volume={volume:+d}%")
         
-        use_bridge = is_same_language
-        source_se, _ = await self.generate_source_embedding(
-            target_language, gender, voice_version, use_bridge_language=use_bridge
-        )
+        source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
-        initial_distance = compute_embedding_distance(source_se, target_se)
+        same_lang = input_language and normalize_language_code(input_language) == normalize_language_code(target_language)
         
-        if is_same_language and initial_distance < 0.15:
-            print(f"[zunel] Embedding distance too small ({initial_distance:.4f}), enforcing bridge language")
-            source_se, _ = await self.generate_source_embedding(
-                target_language, gender, voice_version, use_bridge_language=True
-            )
-        
-        if auto_params:
+        if auto_params and params:
             adaptive_tau, emb_distance, complexity_score, rough_score = compute_adaptive_tau(
-                params, source_se, target_se, is_same_language=is_same_language
+                params, source_se, target_se, same_language=same_lang
             )
             
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
             print(f"[zunel] Voice complexity score: {complexity_score:.4f}")
             print(f"[zunel] Roughness score: {rough_score:.4f}")
             print(f"[zunel] Adaptive tau: {adaptive_tau:.4f}")
-            
-            if is_same_language:
-                print(f"[zunel] Same-language mode: using low tau ({adaptive_tau:.4f}) for identity preservation")
-            
             tau = adaptive_tau
         else:
-            if is_same_language:
-                tau = 0.10
-                print(f"[zunel] Same-language mode: using default low tau: {tau:.4f}")
-            else:
-                tau = 0.30
-                print(f"[zunel] Using default tau: {tau:.4f}")
+            tau = 0.30
+            print(f"[zunel] Using default tau: {tau:.4f}")
         
         voice = voice_config.get_voice(target_language, gender, voice_version)
         tmp_synthesis_path = os.path.join(self.temp_dir, 'tmp_synthesis.wav')
