@@ -29,6 +29,47 @@ def is_extreme_voice(pitch_hz, detected_gender):
         return pitch_hz < 190 or pitch_hz > 230
 
 
+def analyze_voice_quality(audio_path):
+    sound = parselmouth.Sound(audio_path)
+    
+    point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+    
+    jitter_local = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+    jitter_ppq5 = call(point_process, "Get jitter (ppq5)", 0, 0, 0.0001, 0.02, 1.3)
+    
+    shimmer_local = call([sound, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    shimmer_apq5 = call([sound, point_process], "Get shimmer (apq5)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    
+    harmonicity = call(sound, "To Harmonicity (cc)", 0.01, 75, 0.1, 1.0)
+    hnr = call(harmonicity, "Get mean", 0, 0)
+    
+    jitter_percent = jitter_local * 100
+    shimmer_percent = shimmer_local * 100
+    
+    is_rough = jitter_percent > 1.0 or shimmer_percent > 5.0 or hnr < 12.0
+    
+    roughness_score = 0.0
+    if jitter_percent > 1.0:
+        roughness_score += min((jitter_percent - 1.0) / 2.0, 1.0) * 0.35
+    if shimmer_percent > 5.0:
+        roughness_score += min((shimmer_percent - 5.0) / 5.0, 1.0) * 0.35
+    if hnr < 12.0:
+        roughness_score += min((12.0 - hnr) / 8.0, 1.0) * 0.30
+    
+    roughness_score = min(roughness_score, 1.0)
+    return {
+        'jitter_local': jitter_local,
+        'jitter_ppq5': jitter_ppq5,
+        'jitter_percent': jitter_percent,
+        'shimmer_local': shimmer_local,
+        'shimmer_apq5': shimmer_apq5,
+        'shimmer_percent': shimmer_percent,
+        'hnr': hnr,
+        'is_rough_voice': is_rough,
+        'roughness_score': roughness_score
+    }
+
+
 def analyze_formants(audio_path):
     sound = parselmouth.Sound(audio_path)
     
@@ -79,6 +120,84 @@ def analyze_formants(audio_path):
         )
         formant_data['formant_dispersion'] = formant_dispersion
     return formant_data
+
+
+def estimate_vocal_tract_length(f1, f2, f3):
+    if f1 <= 0 or f2 <= 0 or f3 <= 0:
+        return 0.0
+    
+    speed_of_sound = 35000.0
+    
+    vtl_f1 = speed_of_sound / (4 * f1)
+    vtl_f2 = speed_of_sound / (4 * f2)
+    vtl_f3 = speed_of_sound / (4 * f3)
+    
+    vtl_estimate = (vtl_f1 + vtl_f2 + vtl_f3) / 3.0
+    return vtl_estimate
+
+
+def estimate_vocal_age(pitch_hz, formants, hnr, gender):
+    f1 = formants.get('f1_mean', 0)
+    f2 = formants.get('f2_mean', 0)
+    f3 = formants.get('f3_mean', 0)
+    formant_dispersion = formants.get('formant_dispersion', 0)
+    
+    if gender == 'male':
+        young_pitch_ref = 120.0
+        elderly_pitch_ref = 105.0
+        young_hnr_ref = 15.0
+        elderly_hnr_ref = 10.0
+        young_f1_ref = 500.0
+        elderly_f1_ref = 480.0
+    else:
+        young_pitch_ref = 210.0
+        elderly_pitch_ref = 195.0
+        young_hnr_ref = 18.0
+        elderly_hnr_ref = 12.0
+        young_f1_ref = 550.0
+        elderly_f1_ref = 530.0
+    
+    age_score = 0.0
+    
+    if pitch_hz > 0:
+        pitch_factor = (young_pitch_ref - pitch_hz) / (young_pitch_ref - elderly_pitch_ref)
+        age_score += np.clip(pitch_factor, 0, 1) * 0.25
+    
+    if hnr > 0:
+        hnr_factor = (young_hnr_ref - hnr) / (young_hnr_ref - elderly_hnr_ref)
+        age_score += np.clip(hnr_factor, 0, 1) * 0.35
+    
+    if f1 > 0:
+        f1_factor = (young_f1_ref - f1) / (young_f1_ref - elderly_f1_ref)
+        age_score += np.clip(f1_factor, 0, 1) * 0.25
+    
+    if formant_dispersion > 500:
+        dispersion_factor = 1.0 - min(formant_dispersion / 1500.0, 1.0)
+        age_score += dispersion_factor * 0.15
+    
+    age_score = np.clip(age_score, 0, 1)
+    
+    estimated_age = 20 + (age_score * 60)
+    
+    vtl = estimate_vocal_tract_length(f1, f2, f3)
+    
+    if gender == 'male':
+        reference_vtl = 17.5
+    else:
+        reference_vtl = 14.5
+    
+    if vtl > 0:
+        vtln_warp_factor = reference_vtl / vtl
+        vtln_warp_factor = np.clip(vtln_warp_factor, 0.80, 1.20)
+    else:
+        vtln_warp_factor = 1.0
+    
+    return {
+        'estimated_age': estimated_age,
+        'age_score': age_score,
+        'vocal_tract_length': vtl,
+        'vtln_warp_factor': vtln_warp_factor
+    }
 
 
 def compute_spectral_envelope_complexity(audio_path):
@@ -239,6 +358,15 @@ def analyze_audio(audio_path):
     spectral_envelope_complexity = compute_spectral_envelope_complexity(audio_path)
     spectral_centroid = compute_spectral_centroid(audio_path)
     
+    voice_quality = analyze_voice_quality(audio_path)
+    
+    age_data = estimate_vocal_age(
+        pitch_hz, 
+        formant_data, 
+        voice_quality['hnr'], 
+        detected_gender if detected_gender else 'male'
+    )
+    
     return {
         'pitch_hz': pitch_hz,
         'detected_gender': detected_gender,
@@ -255,5 +383,16 @@ def analyze_audio(audio_path):
         'formant_f2_std': formant_data['f2_std'],
         'formant_dispersion': formant_data['formant_dispersion'],
         'spectral_envelope_complexity': spectral_envelope_complexity,
-        'spectral_centroid': spectral_centroid
+        'spectral_centroid': spectral_centroid,
+        'jitter_local': voice_quality['jitter_local'],
+        'jitter_percent': voice_quality['jitter_percent'],
+        'shimmer_local': voice_quality['shimmer_local'],
+        'shimmer_percent': voice_quality['shimmer_percent'],
+        'hnr': voice_quality['hnr'],
+        'is_rough_voice': voice_quality['is_rough_voice'],
+        'roughness_score': voice_quality['roughness_score'],
+        'estimated_age': age_data['estimated_age'],
+        'age_score': age_data['age_score'],
+        'vocal_tract_length': age_data['vocal_tract_length'],
+        'vtln_warp_factor': age_data['vtln_warp_factor']
     }
