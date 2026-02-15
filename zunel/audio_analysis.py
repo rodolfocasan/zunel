@@ -29,50 +29,6 @@ def is_extreme_voice(pitch_hz, detected_gender):
         return pitch_hz < 190 or pitch_hz > 230
 
 
-def analyze_formants(audio_path):
-    sound = parselmouth.Sound(audio_path)
-    
-    formant = sound.to_formant_burg(
-        time_step = 0.01,
-        max_number_of_formants = 5,
-        maximum_formant = 5500.0,
-        window_length = 0.025,
-        pre_emphasis_from = 50.0
-    )
-    
-    f1_values = []
-    f2_values = []
-    f3_values = []
-    n_frames = call(formant, "Get number of frames")
-    for i in range(1, n_frames + 1):
-        f1 = call(formant, "Get value at time", 1, formant.get_time_from_frame_number(i), "hertz", "Linear")
-        f2 = call(formant, "Get value at time", 2, formant.get_time_from_frame_number(i), "hertz", "Linear")
-        f3 = call(formant, "Get value at time", 3, formant.get_time_from_frame_number(i), "hertz", "Linear")
-        
-        if not np.isnan(f1) and f1 > 0:
-            f1_values.append(f1)
-        if not np.isnan(f2) and f2 > 0:
-            f2_values.append(f2)
-        if not np.isnan(f3) and f3 > 0:
-            f3_values.append(f3)
-    
-    formant_data = {
-        'f1_mean': np.mean(f1_values) if f1_values else 0,
-        'f2_mean': np.mean(f2_values) if f2_values else 0,
-        'f3_mean': np.mean(f3_values) if f3_values else 0,
-        'formant_dispersion': 0
-    }
-    
-    if f1_values and f2_values and f3_values:
-        formant_dispersion = np.sqrt(
-            (formant_data['f1_mean'] / 1.0) ** 2 +
-            (formant_data['f2_mean'] / 2.0) ** 2 +
-            (formant_data['f3_mean'] / 3.0) ** 2
-        )
-        formant_data['formant_dispersion'] = formant_dispersion
-    return formant_data
-
-
 def analyze_pitch(audio_path):
     sound = parselmouth.Sound(audio_path)
     
@@ -168,16 +124,11 @@ def analyze_audio(audio_path):
     pitch_hz, detected_gender, is_extreme = analyze_pitch(audio_path)
     speech_rate = analyze_speed(audio_path)
     loudness_lufs = analyze_volume(audio_path)
-    formant_data = analyze_formants(audio_path)
     
     return {
         'pitch_hz': pitch_hz,
         'detected_gender': detected_gender,
         'is_extreme_voice': is_extreme,
         'speech_rate_sps': speech_rate,
-        'loudness_lufs': loudness_lufs,
-        'formant_f1_mean': formant_data['f1_mean'],
-        'formant_f2_mean': formant_data['f2_mean'],
-        'formant_f3_mean': formant_data['f3_mean'],
-        'formant_dispersion': formant_data['formant_dispersion']
+        'loudness_lufs': loudness_lufs
     }

@@ -97,7 +97,7 @@ class TimbreConverter(SynthBase):
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
 
-def compute_embedding_distance(embedding1, embedding2):
+def compute_embedding_similarity(embedding1, embedding2):
     if embedding1.dim() == 3:
         embedding1 = embedding1.mean(dim=-1)
     if embedding2.dim() == 3:
@@ -107,20 +107,20 @@ def compute_embedding_distance(embedding1, embedding2):
     cosine_sim_value = cosine_sim.mean().item()
     
     distance = 1.0 - cosine_sim_value
-    return distance, cosine_sim_value
+    return cosine_sim_value, distance
 
 
 def compute_optimal_tau(source_embedding, target_embedding):
-    distance, cosine_sim = compute_embedding_distance(source_embedding, target_embedding)
+    cosine_sim, distance = compute_embedding_similarity(source_embedding, target_embedding)
     
-    base_tau = 0.30
+    base_tau = 0.70
     
-    distance_adjustment = (distance - 0.70) * 0.20
+    similarity_boost = (cosine_sim - 0.20) * 0.50
     
-    optimal_tau = base_tau - distance_adjustment
+    optimal_tau = base_tau + similarity_boost
     
-    optimal_tau = max(0.20, min(optimal_tau, 0.45))
-    return optimal_tau, distance, cosine_sim
+    optimal_tau = max(0.60, min(optimal_tau, 0.85))
+    return optimal_tau, cosine_sim, distance
 
 
 
@@ -195,14 +195,6 @@ class VoiceCloner:
             print(f"[zunel] Speech rate: {speech_rate:.2f} syllables/sec")
             print(f"[zunel] Loudness: {loudness:.1f} LUFS")
             
-            f1 = params.get('formant_f1_mean', 0)
-            f2 = params.get('formant_f2_mean', 0)
-            f3 = params.get('formant_f3_mean', 0)
-            formant_dispersion = params.get('formant_dispersion', 0)
-            
-            if f1 > 0 and f2 > 0:
-                print(f"[zunel] Formants: F1={f1:.0f}Hz, F2={f2:.0f}Hz, F3={f3:.0f}Hz")
-            
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
                 print(f"[zunel] Consider using gender='{detected_gender}' for better results")
@@ -223,15 +215,15 @@ class VoiceCloner:
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
         if auto_params:
-            optimal_tau, emb_distance, cosine_sim = compute_optimal_tau(source_se, target_se)
+            optimal_tau, cosine_sim, emb_distance = compute_optimal_tau(source_se, target_se)
             
             print(f"[zunel] Embedding cosine similarity: {cosine_sim:.4f}")
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
-            print(f"[zunel] Optimal tau (empirically calibrated): {optimal_tau:.4f}")
+            print(f"[zunel] Optimal tau: {optimal_tau:.4f}")
             
             tau = optimal_tau
         else:
-            tau = 0.30
+            tau = 0.70
             print(f"[zunel] Using default tau: {tau:.4f}")
         
         voice = voice_config.get_voice(target_language, gender, voice_version)
@@ -246,7 +238,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion with optimal parameters...")
+        print("[zunel] Performing voice conversion...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,
