@@ -1,6 +1,5 @@
 # zunel/bottleneck.py
 import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -82,7 +81,7 @@ class SegmentGSTBottleneck(nn.Module):
         self.input_dim = input_dim
         self.bottleneck_dim = bottleneck_dim
         
-        self.pre_conv = nn.Conv1d(input_dim, bottleneck_dim, kernel_size=8, stride=1, padding=3)
+        self.pre_projection = nn.Linear(input_dim, bottleneck_dim)
         self.bn = nn.BatchNorm1d(bottleneck_dim)
         
         self.gst = GlobalStyleToken(
@@ -94,15 +93,12 @@ class SegmentGSTBottleneck(nn.Module):
         self.post_projection = nn.Linear(bottleneck_dim, bottleneck_dim)
         
     def forward(self, speaker_embedding):
-        if speaker_embedding.dim() == 2:
-            speaker_embedding = speaker_embedding.unsqueeze(-1)
+        if speaker_embedding.dim() == 3:
+            speaker_embedding = speaker_embedding.squeeze(-1)
         
-        if speaker_embedding.size(1) != self.input_dim:
-            speaker_embedding = speaker_embedding.transpose(1, 2)
+        x = F.relu(self.bn(self.pre_projection(speaker_embedding)))
         
-        x = F.relu(self.bn(self.pre_conv(speaker_embedding)))
-        
-        x = x.transpose(1, 2)
+        x = x.unsqueeze(1)
         
         style_embedding = self.gst(x)
         
@@ -133,7 +129,7 @@ class VAEBottleneck(nn.Module):
     
     def forward(self, speaker_embedding, inference=False):
         if speaker_embedding.dim() == 3:
-            speaker_embedding = torch.mean(speaker_embedding, dim=-1)
+            speaker_embedding = speaker_embedding.squeeze(-1)
         
         mean = self.encoder_mean(speaker_embedding)
         logvar = self.encoder_logvar(speaker_embedding)
@@ -170,7 +166,7 @@ class SimplexBottleneck(nn.Module):
         
     def forward(self, speaker_embedding):
         if speaker_embedding.dim() == 3:
-            speaker_embedding = torch.mean(speaker_embedding, dim=-1)
+            speaker_embedding = speaker_embedding.squeeze(-1)
         
         x = self.projection(speaker_embedding)
         x = F.normalize(x, p=2, dim=-1)
