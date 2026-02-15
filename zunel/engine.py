@@ -97,30 +97,53 @@ class TimbreConverter(SynthBase):
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
 
-def compute_embedding_similarity(embedding1, embedding2):
+def compute_embedding_distance(embedding1, embedding2):
     if embedding1.dim() == 3:
         embedding1 = embedding1.mean(dim=-1)
     if embedding2.dim() == 3:
         embedding2 = embedding2.mean(dim=-1)
     
     cosine_sim = F.cosine_similarity(embedding1, embedding2, dim=1)
-    cosine_sim_value = cosine_sim.mean().item()
-    
-    distance = 1.0 - cosine_sim_value
-    return cosine_sim_value, distance
+    distance = 1.0 - cosine_sim.mean().item()
+    return distance
 
 
-def compute_optimal_tau(source_embedding, target_embedding):
-    cosine_sim, distance = compute_embedding_similarity(source_embedding, target_embedding)
+def compute_adaptive_tau(reference_params, source_embedding, target_embedding):
+    formant_dispersion = reference_params.get('formant_dispersion', 0)
+    spectral_complexity = reference_params.get('spectral_envelope_complexity', 0)
+    pitch_variability = reference_params.get('pitch_variability', 0)
     
-    base_tau = 0.70
+    embedding_distance = compute_embedding_distance(source_embedding, target_embedding)
     
-    similarity_boost = (cosine_sim - 0.20) * 0.50
+    voice_complexity_score = 0.0
+    if formant_dispersion > 0:
+        voice_complexity_score += min(formant_dispersion / 1500.0, 1.0) * 0.3
+    if spectral_complexity > 0:
+        voice_complexity_score += min(spectral_complexity / 100.0, 1.0) * 0.3
+    if pitch_variability > 0:
+        voice_complexity_score += min(pitch_variability / 50.0, 1.0) * 0.2
     
-    optimal_tau = base_tau + similarity_boost
+    embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.2
+    voice_complexity_score += embedding_similarity_bonus
     
-    optimal_tau = max(0.60, min(optimal_tau, 0.85))
-    return optimal_tau, cosine_sim, distance
+    base_tau = 0.15
+    complexity_adjustment = voice_complexity_score * 0.20
+    distance_adjustment = embedding_distance * 0.25
+    
+    adaptive_tau = base_tau + complexity_adjustment + distance_adjustment
+    adaptive_tau = max(0.10, min(adaptive_tau, 0.50))
+    
+    confidence_factors = {
+        'formant_strength': 1.0 if formant_dispersion > 500 else 0.5,
+        'spectral_quality': 1.0 if spectral_complexity > 10 else 0.5,
+        'prosodic_stability': 1.0 if pitch_variability > 10 else 0.5
+    }
+    
+    confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
+    
+    if confidence_score < 0.6:
+        adaptive_tau = min(adaptive_tau + 0.05, 0.50)
+    return adaptive_tau, embedding_distance, voice_complexity_score
 
 
 
@@ -195,6 +218,23 @@ class VoiceCloner:
             print(f"[zunel] Speech rate: {speech_rate:.2f} syllables/sec")
             print(f"[zunel] Loudness: {loudness:.1f} LUFS")
             
+            f1 = params.get('formant_f1_mean', 0)
+            f2 = params.get('formant_f2_mean', 0)
+            f3 = params.get('formant_f3_mean', 0)
+            formant_dispersion = params.get('formant_dispersion', 0)
+            
+            if f1 > 0 and f2 > 0:
+                print(f"[zunel] Formants: F1={f1:.0f}Hz, F2={f2:.0f}Hz, F3={f3:.0f}Hz")
+                print(f"[zunel] Formant dispersion: {formant_dispersion:.2f}")
+            
+            spectral_complexity = params.get('spectral_envelope_complexity', 0)
+            spectral_centroid = params.get('spectral_centroid', 0)
+            
+            if spectral_complexity > 0:
+                print(f"[zunel] Spectral envelope complexity: {spectral_complexity:.2f}")
+            if spectral_centroid > 0:
+                print(f"[zunel] Spectral centroid: {spectral_centroid:.0f} Hz")
+            
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
                 print(f"[zunel] Consider using gender='{detected_gender}' for better results")
@@ -215,15 +255,16 @@ class VoiceCloner:
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
         if auto_params:
-            optimal_tau, cosine_sim, emb_distance = compute_optimal_tau(source_se, target_se)
+            adaptive_tau, emb_distance, complexity_score = compute_adaptive_tau(
+                params, source_se, target_se
+            )
             
-            print(f"[zunel] Embedding cosine similarity: {cosine_sim:.4f}")
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
-            print(f"[zunel] Optimal tau: {optimal_tau:.4f}")
-            
-            tau = optimal_tau
+            print(f"[zunel] Voice complexity score: {complexity_score:.4f}")
+            print(f"[zunel] Adaptive tau: {adaptive_tau:.4f}")
+            tau = adaptive_tau
         else:
-            tau = 0.70
+            tau = 0.30
             print(f"[zunel] Using default tau: {tau:.4f}")
         
         voice = voice_config.get_voice(target_language, gender, voice_version)
@@ -238,7 +279,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion...")
+        print("[zunel] Performing voice conversion with optimized parameters...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,
