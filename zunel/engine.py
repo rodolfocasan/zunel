@@ -104,86 +104,23 @@ def compute_embedding_distance(embedding1, embedding2):
         embedding2 = embedding2.mean(dim=-1)
     
     cosine_sim = F.cosine_similarity(embedding1, embedding2, dim=1)
-    distance = 1.0 - cosine_sim.mean().item()
-    return distance
+    cosine_sim_value = cosine_sim.mean().item()
+    
+    distance = 1.0 - cosine_sim_value
+    return distance, cosine_sim_value
 
 
-def compute_comprehensive_tau(reference_params, source_embedding, target_embedding):
-    formant_dispersion = reference_params.get('formant_dispersion', 0)
-    spectral_complexity = reference_params.get('spectral_envelope_complexity', 0)
-    pitch_variability = reference_params.get('pitch_variability', 0)
+def compute_optimal_tau(source_embedding, target_embedding):
+    distance, cosine_sim = compute_embedding_distance(source_embedding, target_embedding)
     
-    roughness_score = reference_params.get('roughness_score', 0)
-    is_rough_voice = reference_params.get('is_rough_voice', False)
-    jitter_percent = reference_params.get('jitter_percent', 0)
-    shimmer_percent = reference_params.get('shimmer_percent', 0)
-    hnr = reference_params.get('hnr', 15.0)
+    base_tau = 0.30
     
-    estimated_age = reference_params.get('estimated_age', 30.0)
-    age_score = reference_params.get('age_score', 0.0)
-    vtln_warp_factor = reference_params.get('vtln_warp_factor', 1.0)
+    distance_adjustment = (distance - 0.70) * 0.20
     
-    embedding_distance = compute_embedding_distance(source_embedding, target_embedding)
+    optimal_tau = base_tau - distance_adjustment
     
-    voice_complexity_score = 0.0
-    if formant_dispersion > 0:
-        voice_complexity_score += min(formant_dispersion / 1500.0, 1.0) * 0.25
-    if spectral_complexity > 0:
-        voice_complexity_score += min(spectral_complexity / 100.0, 1.0) * 0.25
-    if pitch_variability > 0:
-        voice_complexity_score += min(pitch_variability / 50.0, 1.0) * 0.15
-    
-    embedding_similarity_bonus = max(0, 1.0 - embedding_distance * 2.0) * 0.15
-    voice_complexity_score += embedding_similarity_bonus
-    
-    roughness_adjustment = 0.0
-    if is_rough_voice:
-        roughness_intensity = roughness_score
-        
-        if jitter_percent > 2.0:
-            roughness_intensity += min((jitter_percent - 2.0) / 3.0, 0.5)
-        if shimmer_percent > 8.0:
-            roughness_intensity += min((shimmer_percent - 8.0) / 7.0, 0.5)
-        if hnr < 10.0:
-            roughness_intensity += min((10.0 - hnr) / 6.0, 0.5)
-        
-        roughness_intensity = min(roughness_intensity, 1.5)
-        
-        roughness_adjustment = roughness_intensity * 0.12
-    
-    age_adjustment = 0.0
-    if estimated_age > 35.0:
-        age_factor = (estimated_age - 35.0) / 45.0
-        age_adjustment = min(age_factor, 1.0) * 0.10
-    
-    vtln_adjustment = 0.0
-    if abs(vtln_warp_factor - 1.0) > 0.05:
-        vtln_deviation = abs(vtln_warp_factor - 1.0)
-        vtln_adjustment = min(vtln_deviation / 0.20, 1.0) * 0.08
-    
-    base_tau = 0.08
-    complexity_component = voice_complexity_score * 0.18
-    distance_component = embedding_distance * 0.22
-    roughness_component = roughness_adjustment
-    age_component = age_adjustment
-    vtln_component = vtln_adjustment
-    
-    adaptive_tau = base_tau + complexity_component + distance_component + roughness_component + age_component + vtln_component
-    
-    adaptive_tau = max(0.05, min(adaptive_tau, 0.60))
-    
-    confidence_factors = {
-        'formant_strength': 1.0 if formant_dispersion > 500 else 0.6,
-        'spectral_quality': 1.0 if spectral_complexity > 10 else 0.6,
-        'prosodic_stability': 1.0 if pitch_variability > 10 else 0.6,
-        'voice_quality_valid': 1.0 if hnr > 5.0 else 0.5
-    }
-    
-    confidence_score = sum(confidence_factors.values()) / len(confidence_factors)
-    
-    if confidence_score < 0.65:
-        adaptive_tau = min(adaptive_tau + 0.06, 0.60)
-    return adaptive_tau, embedding_distance, voice_complexity_score, roughness_adjustment, age_adjustment
+    optimal_tau = max(0.20, min(optimal_tau, 0.45))
+    return optimal_tau, distance, cosine_sim
 
 
 
@@ -265,36 +202,6 @@ class VoiceCloner:
             
             if f1 > 0 and f2 > 0:
                 print(f"[zunel] Formants: F1={f1:.0f}Hz, F2={f2:.0f}Hz, F3={f3:.0f}Hz")
-                print(f"[zunel] Formant dispersion: {formant_dispersion:.2f}")
-            
-            spectral_complexity = params.get('spectral_envelope_complexity', 0)
-            if spectral_complexity > 0:
-                print(f"[zunel] Spectral envelope complexity: {spectral_complexity:.2f}")
-            
-            jitter_percent = params.get('jitter_percent', 0)
-            shimmer_percent = params.get('shimmer_percent', 0)
-            hnr = params.get('hnr', 15.0)
-            is_rough = params.get('is_rough_voice', False)
-            roughness_score = params.get('roughness_score', 0)
-            
-            if jitter_percent > 0:
-                print(f"[zunel] Voice quality: Jitter={jitter_percent:.2f}%, Shimmer={shimmer_percent:.2f}%, HNR={hnr:.1f}dB")
-            
-            if is_rough:
-                print(f"[zunel] Detected rough/hoarse voice (roughness score: {roughness_score:.3f})")
-                print(f"[zunel] Applying specialized compensation for voice quality preservation")
-            
-            estimated_age = params.get('estimated_age', 30.0)
-            age_score = params.get('age_score', 0.0)
-            vtl = params.get('vocal_tract_length', 0)
-            vtln_warp = params.get('vtln_warp_factor', 1.0)
-            
-            if estimated_age > 0:
-                print(f"[zunel] Estimated vocal age: {estimated_age:.0f} years (age score: {age_score:.3f})")
-                print(f"[zunel] Vocal tract length: {vtl:.2f}cm, VTLN factor: {vtln_warp:.3f}")
-            
-            if estimated_age > 50:
-                print(f"[zunel] Detected mature voice - applying age-invariant compensation")
             
             if detected_gender and detected_gender != gender:
                 print(f"[zunel] WARNING: Detected gender '{detected_gender}' differs from specified '{gender}'")
@@ -316,21 +223,13 @@ class VoiceCloner:
         source_se, _ = await self.generate_source_embedding(target_language, gender, voice_version)
         
         if auto_params:
-            adaptive_tau, emb_distance, complexity_score, roughness_adj, age_adj = compute_comprehensive_tau(
-                params, source_se, target_se
-            )
+            optimal_tau, emb_distance, cosine_sim = compute_optimal_tau(source_se, target_se)
             
+            print(f"[zunel] Embedding cosine similarity: {cosine_sim:.4f}")
             print(f"[zunel] Embedding distance: {emb_distance:.4f}")
-            print(f"[zunel] Voice complexity score: {complexity_score:.4f}")
+            print(f"[zunel] Optimal tau (empirically calibrated): {optimal_tau:.4f}")
             
-            if roughness_adj > 0:
-                print(f"[zunel] Roughness adjustment: +{roughness_adj:.4f}")
-            if age_adj > 0:
-                print(f"[zunel] Age adjustment: +{age_adj:.4f}")
-            
-            print(f"[zunel] Adaptive tau: {adaptive_tau:.4f}")
-            
-            tau = adaptive_tau
+            tau = optimal_tau
         else:
             tau = 0.30
             print(f"[zunel] Using default tau: {tau:.4f}")
@@ -347,7 +246,7 @@ class VoiceCloner:
             output_file = tmp_synthesis_path
         )
         
-        print("[zunel] Performing voice conversion with optimized identity preservation...")
+        print("[zunel] Performing voice conversion with optimal parameters...")
         self.converter.convert(
             audio_src_path = tmp_synthesis_path,
             src_se = source_se,
