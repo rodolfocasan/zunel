@@ -14,7 +14,10 @@ from zunel import voice_config
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
 from zunel.adapters import SpeakerAdapter
-from zunel.processing import enhance_tts, remove_voice_artifacts
+from zunel.processing import enhance_tts
+
+
+
 
 
 class SynthBase(object):
@@ -29,7 +32,7 @@ class SynthBase(object):
         np.random.seed(42)
         torch.manual_seed(42)
         torch.cuda.manual_seed_all(42)
-
+        
         cfg = helpers.load_config(config_path)
 
         model = VoiceSynthesizer(
@@ -49,6 +52,9 @@ class SynthBase(object):
         missing, unexpected = self.model.load_state_dict(ckpt['model'], strict=False)
         print("[zunel] Loaded checkpoint '{}'".format(ckpt_path))
         print('[zunel] missing/unexpected keys:', missing, unexpected)
+
+
+
 
 
 class TimbreConverter(SynthBase):
@@ -101,7 +107,7 @@ class TimbreConverter(SynthBase):
         if se_save_path is not None:
             os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
-
+        
         return embedding
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):
@@ -121,11 +127,12 @@ class TimbreConverter(SynthBase):
                 spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
             )[0][0, 0].data.cpu().float().numpy()
 
-        audio = remove_voice_artifacts(audio, cfg.audio.sample_rate)
-
         if output_path is None:
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
+
+
+
 
 
 class VoiceCloner:
