@@ -17,3 +17,4 @@ pykakasi
 jamo
 praat-parselmouth
 pyloudnorm
+pyworld

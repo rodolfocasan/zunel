@@ -14,10 +14,7 @@ from zunel import voice_config
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
 from zunel.adapters import SpeakerAdapter
-from zunel.processing import enhance_tts, repair_voice_artifacts
-
-
-
+from zunel.processing import enhance_tts, remove_voice_artifacts
 
 
 class SynthBase(object):
@@ -38,7 +35,7 @@ class SynthBase(object):
         model = VoiceSynthesizer(
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
-            n_speakers=cfg.audio.num_speakers,
+            n_speakers = cfg.audio.num_speakers,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -52,9 +49,6 @@ class SynthBase(object):
         missing, unexpected = self.model.load_state_dict(ckpt['model'], strict=False)
         print("[zunel] Loaded checkpoint '{}'".format(ckpt_path))
         print('[zunel] missing/unexpected keys:', missing, unexpected)
-
-
-
 
 
 class TimbreConverter(SynthBase):
@@ -127,19 +121,11 @@ class TimbreConverter(SynthBase):
                 spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
             )[0][0, 0].data.cpu().float().numpy()
 
-        audio = repair_voice_artifacts(
-            audio,
-            cfg.audio.sample_rate,
-            n_fft=cfg.audio.fft_size,
-            hop_size=cfg.audio.frame_shift
-        )
+        audio = remove_voice_artifacts(audio, cfg.audio.sample_rate)
 
         if output_path is None:
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
-
-
-
 
 
 class VoiceCloner:
@@ -161,8 +147,8 @@ class VoiceCloner:
         target_text,
         gender,
         output_path,
-        voice_version=0,
-        tau=0.3
+        voice_version = 0,
+        tau = 0.3
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
@@ -177,12 +163,12 @@ class VoiceCloner:
         tts_enhanced_path = os.path.join(self.temp_dir, 'tts_enhanced.wav')
 
         await self.tts_generator.save(
-            text=target_text,
-            voice=voice,
-            pitch="+0Hz",
-            rate="+0%",
-            volume="+0%",
-            output_file=tts_raw_path
+            text = target_text,
+            voice = voice,
+            pitch = "+0Hz",
+            rate = "+0%",
+            volume = "+0%",
+            output_file = tts_raw_path
         )
 
         enhance_tts(tts_raw_path, tts_enhanced_path, sr=self.converter.cfg.audio.sample_rate)
@@ -193,11 +179,11 @@ class VoiceCloner:
 
         print("[zunel] Performing voice conversion...")
         self.converter.convert(
-            audio_src_path=tts_enhanced_path,
-            src_se=source_se,
-            tgt_se=target_se,
-            output_path=output_path,
-            tau=tau
+            audio_src_path = tts_enhanced_path,
+            src_se = source_se,
+            tgt_se = target_se,
+            output_path = output_path,
+            tau = tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path
