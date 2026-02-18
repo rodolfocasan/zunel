@@ -8,14 +8,13 @@ import soundfile
 import numpy as np
 
 import torch
-import torch.nn.functional as F
 
 from zunel import helpers
 from zunel import voice_config
 from zunel.architecture import VoiceSynthesizer
 from zunel.signal_processing import compute_spectrogram
 from zunel.adapters import SpeakerAdapter
-from zunel.processing import enhance_tts
+from zunel.processing import enhance_tts, remove_voice_conversion_artifacts
 
 
 
@@ -39,7 +38,7 @@ class SynthBase(object):
         model = VoiceSynthesizer(
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
-            n_speakers=cfg.audio.num_speakers,
+            n_speakers = cfg.audio.num_speakers,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -64,7 +63,6 @@ class TimbreConverter(SynthBase):
         self.version = getattr(self.cfg, '_release_', "1.0.0")
         self.speaker_adapter_src = None
         self.speaker_adapter_tgt = None
-        self.cleaner = None
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
@@ -85,69 +83,6 @@ class TimbreConverter(SynthBase):
 
         self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
         print(f"[zunel] Loaded speaker adapters from {adapter_path}")
-
-    def load_cleaner(self, cleaner_path):
-        if not os.path.exists(cleaner_path):
-            print(f"[zunel] No cleaner found at {cleaner_path}")
-            return
-
-        from clean_voice.cleaner_model import CleanerModel
-
-        n_freq = self.cfg.audio.fft_size // 2 + 1
-        self.cleaner = CleanerModel(n_freq=n_freq).to(self.device)
-
-        checkpoint = torch.load(cleaner_path, map_location=self.device, weights_only=False)
-        self.cleaner.load_state_dict(checkpoint['model'])
-        self.cleaner.eval()
-
-        print(f"[zunel] Loaded cleaner from {cleaner_path}")
-
-    def _apply_cleaner(self, audio):
-        cfg = self.cfg
-        n_fft = cfg.audio.fft_size
-        hop_size = cfg.audio.frame_shift
-        win_size = cfg.audio.frame_length
-
-        pad = int((n_fft - hop_size) / 2)
-        audio_tensor = torch.FloatTensor(audio).unsqueeze(0).to(self.device)
-        audio_padded = F.pad(
-            audio_tensor.unsqueeze(1), (pad, pad), mode='reflect'
-        ).squeeze(1)
-
-        window = torch.hann_window(win_size).to(self.device)
-
-        spec_complex = torch.stft(
-            audio_padded, n_fft,
-            hop_length=hop_size, win_length=win_size,
-            window=window, center=False,
-            normalized=False, onesided=True,
-            return_complex=True
-        )
-
-        magnitude = spec_complex.abs()
-        phase = spec_complex.angle()
-
-        log_mag = torch.log(torch.clamp(magnitude, min=1e-5))
-
-        with torch.no_grad():
-            cleaned_log_mag = self.cleaner(log_mag)
-
-        cleaned_mag = torch.exp(cleaned_log_mag)
-
-        spec_cleaned = cleaned_mag * torch.exp(1j * phase)
-
-        audio_reconstructed = torch.istft(
-            spec_cleaned,
-            n_fft=n_fft,
-            hop_length=hop_size,
-            win_length=win_size,
-            window=window,
-            center=False,
-            length=audio_padded.shape[-1]
-        )
-
-        n_orig = len(audio)
-        return audio_reconstructed[0, pad:pad + n_orig].cpu().float().numpy()
 
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
@@ -188,16 +123,20 @@ class TimbreConverter(SynthBase):
             ).to(self.device)
 
             spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
-            audio = self.model.voice_conversion(
+            audio_out = self.model.voice_conversion(
                 spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
             )[0][0, 0].data.cpu().float().numpy()
 
-        if self.cleaner is not None:
-            audio = self._apply_cleaner(audio)
+        audio_out = remove_voice_conversion_artifacts(
+            audio_out,
+            sr=cfg.audio.sample_rate,
+            n_fft=cfg.audio.fft_size,
+            hop_length=cfg.audio.frame_shift
+        )
 
         if output_path is None:
-            return audio
-        soundfile.write(output_path, audio, cfg.audio.sample_rate)
+            return audio_out
+        soundfile.write(output_path, audio_out, cfg.audio.sample_rate)
 
 
 
@@ -222,8 +161,8 @@ class VoiceCloner:
         target_text,
         gender,
         output_path,
-        voice_version=0,
-        tau=0.3
+        voice_version = 0,
+        tau = 0.3
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
@@ -238,12 +177,12 @@ class VoiceCloner:
         tts_enhanced_path = os.path.join(self.temp_dir, 'tts_enhanced.wav')
 
         await self.tts_generator.save(
-            text=target_text,
-            voice=voice,
-            pitch="+0Hz",
-            rate="+0%",
-            volume="+0%",
-            output_file=tts_raw_path
+            text = target_text,
+            voice = voice,
+            pitch = "+0Hz",
+            rate = "+0%",
+            volume = "+0%",
+            output_file = tts_raw_path
         )
 
         enhance_tts(tts_raw_path, tts_enhanced_path, sr=self.converter.cfg.audio.sample_rate)
@@ -254,11 +193,11 @@ class VoiceCloner:
 
         print("[zunel] Performing voice conversion...")
         self.converter.convert(
-            audio_src_path=tts_enhanced_path,
-            src_se=source_se,
-            tgt_se=target_se,
-            output_path=output_path,
-            tau=tau
+            audio_src_path = tts_enhanced_path,
+            src_se = source_se,
+            tgt_se = target_se,
+            output_path = output_path,
+            tau = tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path
