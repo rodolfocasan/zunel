@@ -1,5 +1,6 @@
 # zunel/engine.py
 import os
+import random
 import shutil
 import librosa
 import tempfile
@@ -27,6 +28,11 @@ class SynthBase(object):
             print(f"[zunel] WARNING: CUDA requested but not available, falling back to CPU")
             device = 'cpu'
 
+        random.seed(42)
+        np.random.seed(42)
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+        
         cfg = helpers.load_config(config_path)
 
         model = VoiceSynthesizer(
