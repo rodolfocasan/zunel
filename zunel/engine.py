@@ -20,6 +20,39 @@ from zunel.processing import enhance_tts
 _MAX_REF_DURATION = 8.0
 
 
+def _remove_all_weight_norm(model):
+    from torch.nn.utils import remove_weight_norm
+
+    # WaveDecoder: ups (ConvTranspose1d) + ResidualStack Conv1d layers
+    try:
+        model.wave_decoder.remove_weight_norm()
+    except Exception:
+        pass
+
+    # SpeakerEmbedder: Conv2d layers
+    for conv in model.speaker_embedder.convs:
+        try:
+            remove_weight_norm(conv)
+        except Exception:
+            pass
+
+    # VariationalEncoder → WaveNetBlock (in_layers, res_skip_layers, cond_layer)
+    try:
+        model.var_encoder.enc.remove_weight_norm()
+    except Exception:
+        pass
+
+    # NormalizingFlowBlock → CouplingLayer → WaveNetBlock
+    for flow in model.norm_flow.flows:
+        if hasattr(flow, 'enc') and hasattr(flow.enc, 'remove_weight_norm'):
+            try:
+                flow.enc.remove_weight_norm()
+            except Exception:
+                pass
+
+    print('[zunel] Weight norm removed from WaveDecoder, SpeakerEmbedder, VariationalEncoder, NormalizingFlow')
+
+
 def _quantize_linear_torchao(model):
     try:
         from torchao.quantization import quantize_, Int8WeightOnlyConfig
@@ -112,15 +145,17 @@ class TimbreConverter(SynthBase):
 
         self.model.eval()
 
+        # Remove weight_norm first: materializes weight_g/weight_v into plain tensors.
+        # This eliminates 90+ redundant norm recomputations per forward pass (WaveDecoder,
+        # WaveNetBlock, SpeakerEmbedder). Also makes legacy quantize deepcopy safe.
+        _remove_all_weight_norm(self.model)
+
         if quantize:
-            # torchao quantize_ is inplace by design — no deepcopy, compatible with weight_norm
             ao_ok = _quantize_linear_torchao(self.model)
             if ao_ok:
-                # GRU weights are not nn.Linear, torchao skips them; use legacy path inplace
                 _quantize_gru_legacy(self.model)
                 print('[zunel] INT8: Linear via torchao + GRU via legacy dynamic quant')
             else:
-                # inplace=True avoids the deepcopy that crashes on weight_norm non-leaf tensors
                 _quantize_all_legacy(self.model)
                 print('[zunel] INT8: Linear + GRU via legacy dynamic quant (inplace)')
 
@@ -182,9 +217,9 @@ class TimbreConverter(SynthBase):
                 self.cfg.audio.frame_shift, self.cfg.audio.frame_length, center=False,
             ).to(self.device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 g = self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
-                emb = g.detach().cpu()
+                emb = g.cpu()
 
             if cache_key is not None:
                 self._se_cache[cache_key] = emb
@@ -204,7 +239,7 @@ class TimbreConverter(SynthBase):
         cfg = self.cfg
         audio, _ = librosa.load(audio_src_path, sr=cfg.audio.sample_rate)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             y = torch.FloatTensor(audio).to(self.device).unsqueeze(0)
 
             spec = compute_spectrogram(
