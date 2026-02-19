@@ -1,4 +1,4 @@
-# zunel - Made with ❤️ in 🇸🇻 El Salvador
+# zunel - Made with ❤️ in El Salvador
 Multilingual voice cloning and timbre conversion engine. Given a reference audio clip, zunel transfers the speaker's timbre to synthesized speech in any supported language while preserving prosody and naturalness.
 
 
