@@ -1,4 +1,4 @@
-# zunel/adapters.py
+# zunel/core/adapters.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

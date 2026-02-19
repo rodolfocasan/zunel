@@ -1,4 +1,4 @@
-# zunel/voice_encoder.py
+# zunel/voices/voice_encoder.py
 import os
 import base64
 import hashlib
@@ -20,6 +20,7 @@ _silero_read_audio = None
 
 def _load_silero():
     global _silero_model, _silero_get_ts, _silero_read_audio
+    
     if _silero_model is not None:
         return _silero_model, _silero_get_ts, _silero_read_audio
 
@@ -32,8 +33,8 @@ def _load_silero():
         model, utils = torch.hub.load(
             'snakers4/silero-vad',
             'silero_vad',
-            trust_repo=True,
-            verbose=False
+            trust_repo = True,
+            verbose = False
         )
         _silero_model = model
         _silero_get_ts = utils[0]
@@ -52,11 +53,11 @@ def segment_with_asr(audio_path, audio_name, target_dir='processed'):
     timestamps = get_speech_timestamps(
         wav,
         vad_model,
-        sampling_rate=SAMPLE_RATE,
-        min_speech_duration_ms=1500,
-        max_speech_duration_s=20.0,
-        min_silence_duration_ms=300,
-        return_seconds=True
+        sampling_rate = SAMPLE_RATE,
+        min_speech_duration_ms = 1500,
+        max_speech_duration_s = 20.0,
+        min_silence_duration_ms = 300,
+        return_seconds = True
     )
 
     audio = AudioSegment.from_file(audio_path)
@@ -81,9 +82,12 @@ def segment_with_asr(audio_path, audio_name, target_dir='processed'):
         try:
             tmp_path = out_path + '._tmp.wav'
             chunk.set_frame_rate(16000).set_channels(1).export(tmp_path, format='wav')
+            
             with sr.AudioFile(tmp_path) as source:
                 audio_data = recognizer.record(source)
+            
             text = recognizer.recognize_google(audio_data)
+            
             os.remove(tmp_path)
             if len(text.strip()) >= 2:
                 chunk.export(out_path, format='wav')
@@ -157,7 +161,7 @@ def audio_fingerprint(audio_path):
 
 def extract_speaker_embedding(audio_path, vc_model, target_dir='processed', vad=True):
     version = vc_model.version
-    print("Zunel version:", version)
+    print("[zunel] version:", version)
 
     audio_name = f"{os.path.basename(audio_path).rsplit('.', 1)[0]}_{version}_{audio_fingerprint(audio_path)}"
     se_path = os.path.join(target_dir, audio_name, 'se.pth')
@@ -168,6 +172,8 @@ def extract_speaker_embedding(audio_path, vc_model, target_dir='processed', vad=
         wavs_dir = segment_with_asr(audio_path, target_dir=target_dir, audio_name=audio_name)
 
     wav_files = glob(f'{wavs_dir}/*.wav')
+    
     if not wav_files:
         raise NotImplementedError('[zunel] No audio segments found!')
+    
     return vc_model.extract_se(wav_files, se_save_path=se_path), audio_name

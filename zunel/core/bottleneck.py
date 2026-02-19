@@ -1,4 +1,4 @@
-# zunel/bottleneck.py
+# zunel/core/bottleneck.py
 import math
 import torch
 import torch.nn as nn
@@ -62,9 +62,9 @@ class GlobalStyleToken(nn.Module):
         style_tokens = self.style_tokens.expand(batch_size, -1, -1)
         
         style_embed, _ = self.attention(
-            queries=style_tokens,
-            keys=inputs,
-            values=inputs
+            queries = style_tokens,
+            keys = inputs,
+            values = inputs
         )
         
         style_embed = torch.mean(style_embed, dim=1)
@@ -85,9 +85,9 @@ class SegmentGSTBottleneck(nn.Module):
         self.layer_norm = nn.LayerNorm(bottleneck_dim)
         
         self.gst = GlobalStyleToken(
-            embedding_dim=bottleneck_dim,
-            n_style_tokens=n_style_tokens,
-            n_heads=n_heads
+            embedding_dim = bottleneck_dim,
+            n_style_tokens = n_style_tokens,
+            n_heads = n_heads
         )
         
         self.post_projection = nn.Linear(bottleneck_dim, output_dim)
@@ -97,7 +97,6 @@ class SegmentGSTBottleneck(nn.Module):
             speaker_embedding = speaker_embedding.squeeze(-1)
         
         x = F.relu(self.layer_norm(self.pre_projection(speaker_embedding)))
-        
         x = x.unsqueeze(1)
         
         style_embedding = self.gst(x)
@@ -190,39 +189,39 @@ class SimplexBottleneck(nn.Module):
 class BottleneckModule(nn.Module):
     def __init__(
         self,
-        input_dim=256,
-        bottleneck_dim=1024,
-        output_dim=256,
-        bottleneck_type='segment_gst',
-        n_style_tokens=10,
-        n_heads=8,
-        n_vertices=128,
-        kl_weight=0.0001
+        input_dim = 256,
+        bottleneck_dim = 1024,
+        output_dim = 256,
+        bottleneck_type = 'segment_gst',
+        n_style_tokens = 10,
+        n_heads = 8,
+        n_vertices = 128,
+        kl_weight = 0.0001
     ):
         super().__init__()
         self.bottleneck_type = bottleneck_type
         
         if bottleneck_type == 'segment_gst':
             self.bottleneck = SegmentGSTBottleneck(
-                input_dim=input_dim,
-                bottleneck_dim=bottleneck_dim,
-                output_dim=output_dim,
-                n_style_tokens=n_style_tokens,
-                n_heads=n_heads
+                input_dim = input_dim,
+                bottleneck_dim = bottleneck_dim,
+                output_dim = output_dim,
+                n_style_tokens = n_style_tokens,
+                n_heads = n_heads
             )
         elif bottleneck_type == 'vae':
             self.bottleneck = VAEBottleneck(
-                input_dim=input_dim,
-                bottleneck_dim=bottleneck_dim,
-                output_dim=output_dim,
-                kl_weight=kl_weight
+                input_dim = input_dim,
+                bottleneck_dim = bottleneck_dim,
+                output_dim = output_dim,
+                kl_weight = kl_weight
             )
         elif bottleneck_type == 'simplex':
             self.bottleneck = SimplexBottleneck(
-                input_dim=input_dim,
-                bottleneck_dim=bottleneck_dim,
-                output_dim=output_dim,
-                n_vertices=n_vertices
+                input_dim = input_dim,
+                bottleneck_dim = bottleneck_dim,
+                output_dim = output_dim,
+                n_vertices = n_vertices
             )
         else:
             raise ValueError(f"Unknown bottleneck type: {bottleneck_type}")

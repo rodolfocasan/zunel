@@ -1,4 +1,4 @@
-# zunel/text_processing.py
+# zunel/text/text_processing.py
 import re
 import jieba
 import cn2an
@@ -309,11 +309,14 @@ def zh_to_bopomofo(text):
     result = ''
     for word in words:
         bopo = lazy_pinyin(word, BOPOMOFO)
+        
         if not re.search('[\u4e00-\u9fff]', word):
             result += word
             continue
+        
         for i in range(len(bopo)):
             bopo[i] = re.sub(r'([\u3105-\u3129])$', r'\1ˉ', bopo[i])
+        
         if result:
             result += ' '
         result += ''.join(bopo)

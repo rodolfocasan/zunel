@@ -1,4 +1,4 @@
-# zunel/audio_analysis.py
+# zunel/audio/audio_analysis.py
 import numpy as np
 import parselmouth
 import soundfile as sf

@@ -9,12 +9,12 @@ import numpy as np
 
 import torch
 
-from zunel import helpers
-from zunel import voice_config
-from zunel.architecture import VoiceSynthesizer
-from zunel.signal_processing import compute_spectrogram
-from zunel.adapters import SpeakerAdapter
-from zunel.processing import enhance_tts
+from zunel.core import helpers
+from zunel.voices import voice_config
+from zunel.core.architecture import VoiceSynthesizer
+from zunel.audio.signal_processing import compute_spectrogram
+from zunel.core.adapters import SpeakerAdapter
+from zunel.audio.processing import enhance_tts
 
 
 
@@ -227,7 +227,6 @@ class TimbreConverter(SynthBase):
             if parent:
                 os.makedirs(parent, exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
-
         return embedding
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):

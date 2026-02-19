@@ -1,4 +1,4 @@
-# zunel/signal_processing.py
+# zunel/audio/signal_processing.py
 import librosa
 import numpy as np
 from librosa.filters import mel as librosa_mel_fn
@@ -73,6 +73,7 @@ def compute_spectrogram(y, n_fft, sample_rate, hop_size, win_size, center=False)
 def compute_spectrogram_conv(y, n_fft, sample_rate, hop_size, win_size, center=False):
     global _window_cache
     cache_key = str(win_size) + "_" + str(y.dtype) + "_" + str(y.device)
+    
     if cache_key not in _window_cache:
         _window_cache[cache_key] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
 
@@ -109,6 +110,7 @@ def spec_to_mel(spec, n_fft, n_mels, sample_rate, fmin, fmax):
     if cache_key not in _mel_basis_cache:
         mel_fb = librosa_mel_fn(sample_rate, n_fft, n_mels, fmin, fmax)
         _mel_basis_cache[cache_key] = torch.from_numpy(mel_fb).to(dtype=spec.dtype, device=spec.device)
+    
     spec = torch.matmul(_mel_basis_cache[cache_key], spec)
     return normalize_spectrum(spec)
 
@@ -126,6 +128,7 @@ def compute_mel_spectrogram(y, n_fft, n_mels, sample_rate, hop_size, win_size, f
     if mel_key not in _mel_basis_cache:
         mel_fb = librosa_mel_fn(sample_rate, n_fft, n_mels, fmin, fmax)
         _mel_basis_cache[mel_key] = torch.from_numpy(mel_fb).to(dtype=y.dtype, device=y.device)
+    
     if win_key not in _window_cache:
         _window_cache[win_key] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
 
@@ -246,8 +249,10 @@ def _bounded_rq_spline(
         raise ValueError("[zunel] Input to a transform is not within its domain")
 
     num_bins = unnormalized_widths.shape[-1]
+    
     if min_bin_width * num_bins > 1.0:
         raise ValueError("[zunel] Minimal bin width too large for the number of bins")
+    
     if min_bin_height * num_bins > 1.0:
         raise ValueError("[zunel] Minimal bin height too large for the number of bins")
 

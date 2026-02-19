@@ -1,11 +1,11 @@
-# zunel/attention.py
+# zunel/core/attention.py
 import math
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 import logging
-from zunel import helpers
+from zunel.core import helpers
 
 
 
@@ -61,6 +61,7 @@ class TransformerEncoder(nn.Module):
 
         if "gin_channels" in kwargs:
             self.gin_channels = kwargs["gin_channels"]
+            
             if self.gin_channels != 0:
                 self.spk_emb_linear = nn.Linear(self.gin_channels, self.hidden_channels)
                 self.cond_layer_idx = kwargs.get("cond_layer_idx", 2)
@@ -258,6 +259,7 @@ class MultiHeadAttn(nn.Module):
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e4)
+            
             if self.block_length is not None:
                 assert t_s == t_t, "Local attention is only available for self-attention."
                 block_mask = torch.ones_like(scores).triu(-self.block_length).tril(self.block_length)

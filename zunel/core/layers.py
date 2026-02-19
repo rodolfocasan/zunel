@@ -1,4 +1,4 @@
-# zunel/layers.py
+# zunel/core/layers.py
 import math
 import torch
 from torch import nn
@@ -6,10 +6,10 @@ from torch.nn import Conv1d
 from torch.nn import functional as F
 from torch.nn.utils import weight_norm, remove_weight_norm
 
-from zunel import helpers
-from zunel.attention import TransformerEncoder
-from zunel.helpers import initialize_weights, compute_padding
-from zunel.signal_processing import rational_quadratic_transform
+from zunel.core import helpers
+from zunel.core.attention import TransformerEncoder
+from zunel.core.helpers import initialize_weights, compute_padding
+from zunel.audio.signal_processing import rational_quadratic_transform
 
 
 

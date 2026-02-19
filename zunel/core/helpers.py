@@ -1,4 +1,4 @@
-# zunel/helpers.py
+# zunel/core/helpers.py
 import re
 import math
 import json
@@ -113,6 +113,7 @@ def shift_right(x):
 def length_mask(lengths, max_len=None):
     if max_len is None:
         max_len = lengths.max()
+    
     idx = torch.arange(max_len, dtype=lengths.dtype, device=lengths.device)
     return idx.unsqueeze(0) < lengths.unsqueeze(1)
 

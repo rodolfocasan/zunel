@@ -1,4 +1,4 @@
-# zunel/voice_config.py
+# zunel/voices/voice_config.py
 
 
 

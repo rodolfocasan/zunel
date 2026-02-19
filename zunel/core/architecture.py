@@ -1,4 +1,4 @@
-# zunel/architecture.py
+# zunel/core/architecture.py
 import math
 import torch
 from torch import nn
@@ -6,10 +6,10 @@ from torch.nn import functional as F
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 
-from zunel import layers
-from zunel import helpers
-from zunel import attention
-from zunel.helpers import initialize_weights, compute_padding
+from zunel.core import layers
+from zunel.core import helpers
+from zunel.core import attention
+from zunel.core.helpers import initialize_weights, compute_padding
 
 
 
@@ -93,6 +93,7 @@ class StochasticTemporalPredictor(nn.Module):
         self.log_flow = layers.LogLayer()
         self.flows = nn.ModuleList()
         self.flows.append(layers.AffineLayer(2))
+        
         for i in range(n_flows):
             self.flows.append(layers.SplineFlow(2, filter_channels, kernel_size, n_layers=3))
             self.flows.append(layers.FlipLayer())
@@ -156,6 +157,7 @@ class StochasticTemporalPredictor(nn.Module):
 
             for flow in active_flows:
                 z = flow(z, x_mask, g=x, reverse=reverse)
+            
             return torch.split(z, [1, 1], 1)[0]
 
 
@@ -287,8 +289,10 @@ class SpeakerEmbedder(nn.Module):
         out = out.transpose(1, 2)
         T, N2 = out.size(1), out.size(0)
         out = out.contiguous().view(N2, T, -1)
+        
         if hasattr(self.gru, 'flatten_parameters'):
             self.gru.flatten_parameters()
+        
         _, out = self.gru(out)
         return self.proj(out.squeeze(0))
 
@@ -313,6 +317,7 @@ class NormalizingFlowBlock(nn.Module):
         self.gin_channels = gin_channels
 
         self.flows = nn.ModuleList()
+        
         for i in range(n_flows):
             self.flows.append(
                 layers.CouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True)
@@ -417,8 +422,8 @@ class VoiceSynthesizer(nn.Module):
         z, m_q, logs_q, y_mask = self.var_encoder(
             y,
             y_lengths,
-            g=g_src,
-            tau=tau,
+            g = g_src,
+            tau = tau,
         )
 
         z_p = self.norm_flow(z, y_mask, g=g_src)
@@ -426,6 +431,6 @@ class VoiceSynthesizer(nn.Module):
 
         o_hat = self.wave_decoder(
             z_hat * y_mask,
-            g=g_tgt,
+            g = g_tgt,
         )
         return o_hat, y_mask, (z, z_p, z_hat)
