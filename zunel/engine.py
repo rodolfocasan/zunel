@@ -1,5 +1,6 @@
 # zunel/engine.py
 import os
+import platform
 import random
 import shutil
 import librosa
@@ -50,6 +51,16 @@ def _remove_all_weight_norm(model):
             except Exception:
                 pass
     print('[zunel] Weight norm removed from WaveDecoder, SpeakerEmbedder, VariationalEncoder, NormalizingFlow')
+
+
+def _set_quantized_backend():
+    machine = platform.machine().lower()
+
+    if machine in ('aarch64', 'arm64', 'armv7l'):
+        torch.backends.quantized.engine = 'qnnpack'
+    else:
+        torch.backends.quantized.engine = 'x86'
+    print(f'[zunel] Quantized backend: {torch.backends.quantized.engine} (arch: {machine})')
 
 
 def _quantize_linear_torchao(model):
@@ -142,6 +153,7 @@ class TimbreConverter(SynthBase):
 
         cpu_count = get_cpu_count_by_percentage(30)
         torch.set_num_threads(cpu_count)
+
         try:
             torch.set_num_interop_threads(max(1, cpu_count // 2))
         except RuntimeError:
@@ -151,6 +163,8 @@ class TimbreConverter(SynthBase):
         _remove_all_weight_norm(self.model)
 
         if quantize:
+            _set_quantized_backend()
+
             ao_ok = _quantize_linear_torchao(self.model)
             if ao_ok:
                 _quantize_gru_legacy(self.model)
@@ -249,6 +263,7 @@ class TimbreConverter(SynthBase):
 
         if output_path is None:
             return audio
+
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
 
@@ -274,8 +289,8 @@ class VoiceCloner:
         target_text,
         gender,
         output_path,
-        voice_version=0,
-        tau=0.3
+        voice_version = 0,
+        tau = 0.3
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
