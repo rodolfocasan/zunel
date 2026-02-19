@@ -20,6 +20,42 @@ from zunel.processing import enhance_tts
 _MAX_REF_DURATION = 8.0
 
 
+def _quantize_linear_torchao(model):
+    try:
+        from torchao.quantization import quantize_, Int8WeightOnlyConfig
+        quantize_(model, Int8WeightOnlyConfig())
+        return True
+    except ImportError:
+        pass
+
+    try:
+        from torchao.quantization import quantize_, int8_weight_only
+        quantize_(model, int8_weight_only())
+        return True
+    except (ImportError, Exception):
+        pass
+
+    return False
+
+
+def _quantize_gru_legacy(model):
+    torch.ao.quantization.quantize_dynamic(
+        model,
+        {torch.nn.GRU},
+        dtype=torch.qint8,
+        inplace=True
+    )
+
+
+def _quantize_all_legacy(model):
+    torch.ao.quantization.quantize_dynamic(
+        model,
+        {torch.nn.Linear, torch.nn.GRU},
+        dtype=torch.qint8,
+        inplace=True
+    )
+
+
 class SynthBase(object):
     def __init__(self, config_path, device='auto'):
         if device == 'auto':
@@ -74,12 +110,16 @@ class TimbreConverter(SynthBase):
         self.model.eval()
 
         if quantize:
-            self.model = torch.quantization.quantize_dynamic(
-                self.model,
-                {torch.nn.Linear, torch.nn.GRU},
-                dtype=torch.qint8
-            )
-            print('[zunel] Applied INT8 dynamic quantization (Linear, GRU)')
+            # torchao quantize_ is inplace by design — no deepcopy, compatible with weight_norm
+            ao_ok = _quantize_linear_torchao(self.model)
+            if ao_ok:
+                # GRU weights are not nn.Linear, torchao skips them; use legacy path inplace
+                _quantize_gru_legacy(self.model)
+                print('[zunel] INT8: Linear via torchao + GRU via legacy dynamic quant')
+            else:
+                # inplace=True avoids the deepcopy that crashes on weight_norm non-leaf tensors
+                _quantize_all_legacy(self.model)
+                print('[zunel] INT8: Linear + GRU via legacy dynamic quant (inplace)')
 
         if compile_model and hasattr(torch, 'compile'):
             try:
