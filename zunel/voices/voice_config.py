@@ -16,7 +16,7 @@ VOICE_REGISTRY = {
             'es-EC-AndreaNeural'
         ]
     },
-    'es-es': {
+    'es': {
         'male': [
             'es-ES-AlvaroNeural'
         ],
