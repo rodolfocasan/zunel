@@ -15,6 +15,7 @@ from zunel.core.architecture import VoiceSynthesizer
 from zunel.audio.signal_processing import compute_spectrogram
 from zunel.core.adapters import SpeakerAdapter
 from zunel.audio.processing import enhance_tts
+from zunel.utils.resources import get_cpu_count_by_percentage
 
 
 
@@ -139,7 +140,7 @@ class TimbreConverter(SynthBase):
             self.model = self.model.cpu()
             self.device = 'cpu'
 
-        cpu_count = os.cpu_count() or 4
+        cpu_count = get_cpu_count_by_percentage(30)
         torch.set_num_threads(cpu_count)
         try:
             torch.set_num_interop_threads(max(1, cpu_count // 2))
