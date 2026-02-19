@@ -34,18 +34,32 @@ def _torch_installed():
 
 
 def _detect_cuda():
-    result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-    if result.returncode != 0:
+    try:
+        result = subprocess.run(
+            ['nvidia-smi'],
+            capture_output = True,
+            text = True
+        )
+        if result.returncode != 0:
+            return None
+        match = re.search(r'CUDA Version:\s*(\d+)\.(\d+)', result.stdout)
+        if match:
+            return int(match.group(1)), int(match.group(2))
         return None
-    match = re.search(r'CUDA Version:\s*(\d+)\.(\d+)', result.stdout)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None
+    except (FileNotFoundError, OSError):
+        return None
 
 
 def _detect_rocm():
-    result = subprocess.run(['rocm-smi', '--showdriverversion'], capture_output=True, text=True)
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            ['rocm-smi', '--showdriverversion'],
+            capture_output = True,
+            text = True
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def _is_aarch64():
@@ -68,7 +82,7 @@ def _resolve_index():
                 index_url = CUDA_TO_INDEX[(12, 8)]
 
         if (major, minor) == (12, 8) and _is_aarch64():
-            print('[zunel] CUDA 12.8 on aarch64: using default PyPI index')
+            print('[zunel] CUDA 12.8 on aarch64: using default index')
             return None
 
         print(f'[zunel] Detected CUDA {major}.{minor} -> {index_url}')
