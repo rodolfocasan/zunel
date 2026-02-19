@@ -26,12 +26,6 @@ class ChannelNorm(nn.Module):
         x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
         return x.transpose(1, -1)
 
-@torch.jit.script
-def _gate(a, b, n_ch):
-    n = n_ch[0]
-    s = a + b
-    return torch.tanh(s[:, :n, :]) * torch.sigmoid(s[:, n:, :])
-
 
 
 
@@ -61,7 +55,7 @@ class TransformerEncoder(nn.Module):
 
         if "gin_channels" in kwargs:
             self.gin_channels = kwargs["gin_channels"]
-            
+
             if self.gin_channels != 0:
                 self.spk_emb_linear = nn.Linear(self.gin_channels, self.hidden_channels)
                 self.cond_layer_idx = kwargs.get("cond_layer_idx", 2)
@@ -86,90 +80,13 @@ class TransformerEncoder(nn.Module):
     def forward(self, x, x_mask, g=None):
         attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
         x = x * x_mask
-        
+
         for i in range(self.n_layers):
             if i == self.cond_layer_idx and g is not None:
                 g = self.spk_emb_linear(g.transpose(1, 2)).transpose(1, 2)
                 x = (x + g) * x_mask
-            
+
             y = self.drop(self.attn_layers[i](x, x, attn_mask))
-            x = self.norm_layers_1[i](x + y)
-            y = self.drop(self.ffn_layers[i](x, x_mask))
-            x = self.norm_layers_2[i](x + y)
-        return x * x_mask
-
-
-
-
-
-class TransformerDecoder(nn.Module):
-    def __init__(
-        self,
-        hidden_channels,
-        filter_channels,
-        n_heads,
-        n_layers,
-        kernel_size = 1,
-        p_dropout = 0.0,
-        proximal_bias = False,
-        proximal_init = True,
-        **kwargs
-    ):
-        super().__init__()
-        self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.proximal_bias = proximal_bias
-        self.proximal_init = proximal_init
-
-        self.drop = nn.Dropout(p_dropout)
-        self.self_attn_layers = nn.ModuleList()
-        self.norm_layers_0 = nn.ModuleList()
-        self.encdec_attn_layers = nn.ModuleList()
-        self.norm_layers_1 = nn.ModuleList()
-        self.ffn_layers = nn.ModuleList()
-        self.norm_layers_2 = nn.ModuleList()
-
-        for i in range(self.n_layers):
-            self.self_attn_layers.append(
-                MultiHeadAttn(
-                    hidden_channels,
-                    hidden_channels,
-                    n_heads,
-                    p_dropout = p_dropout,
-                    proximal_bias = proximal_bias,
-                    proximal_init = proximal_init
-                )
-            )
-            self.norm_layers_0.append(ChannelNorm(hidden_channels))
-            self.encdec_attn_layers.append(
-                MultiHeadAttn(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout)
-            )
-            self.norm_layers_1.append(ChannelNorm(hidden_channels))
-            self.ffn_layers.append(
-                FeedForward(
-                    hidden_channels,
-                    hidden_channels,
-                    filter_channels,
-                    kernel_size,
-                    p_dropout = p_dropout,
-                    causal = True
-                )
-            )
-            self.norm_layers_2.append(ChannelNorm(hidden_channels))
-
-    def forward(self, x, x_mask, h, h_mask):
-        self_attn_mask = helpers.causal_mask(x_mask.size(2)).to(device=x.device, dtype=x.dtype)
-        encdec_mask = h_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
-        x = x * x_mask
-        
-        for i in range(self.n_layers):
-            y = self.drop(self.self_attn_layers[i](x, x, self_attn_mask))
-            x = self.norm_layers_0[i](x + y)
-            y = self.drop(self.encdec_attn_layers[i](x, h, encdec_mask))
             x = self.norm_layers_1[i](x + y)
             y = self.drop(self.ffn_layers[i](x, x_mask))
             x = self.norm_layers_2[i](x + y)
@@ -226,7 +143,7 @@ class MultiHeadAttn(nn.Module):
         nn.init.xavier_uniform_(self.conv_q.weight)
         nn.init.xavier_uniform_(self.conv_k.weight)
         nn.init.xavier_uniform_(self.conv_v.weight)
-        
+
         if proximal_init:
             with torch.no_grad():
                 self.conv_k.weight.copy_(self.conv_q.weight)
@@ -259,7 +176,7 @@ class MultiHeadAttn(nn.Module):
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e4)
-            
+
             if self.block_length is not None:
                 assert t_s == t_t, "Local attention is only available for self-attention."
                 block_mask = torch.ones_like(scores).triu(-self.block_length).tril(self.block_length)
@@ -287,7 +204,7 @@ class MultiHeadAttn(nn.Module):
         pad_len = max(length - (self.window_size + 1), 0)
         slice_start = max((self.window_size + 1) - length, 0)
         slice_end = slice_start + 2 * length - 1
-        
+
         if pad_len > 0:
             padded = F.pad(rel_emb, helpers.flatten_pad_spec([[0, 0], [pad_len, pad_len], [0, 0]]))
         else:

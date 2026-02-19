@@ -17,6 +17,7 @@ from zunel.audio.signal_processing import rational_quadratic_transform
 
 LRELU_SLOPE = 0.1
 
+
 class ChannelNorm(nn.Module):
     def __init__(self, channels, eps=1e-5):
         super().__init__()
@@ -29,43 +30,6 @@ class ChannelNorm(nn.Module):
         x = x.transpose(1, -1)
         x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
         return x.transpose(1, -1)
-
-
-
-
-
-class ConvNormStack(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, kernel_size, n_layers, p_dropout):
-        super().__init__()
-        assert n_layers > 1, "Number of layers should be larger than 0."
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.n_layers = n_layers
-        self.p_dropout = p_dropout
-
-        self.conv_layers = nn.ModuleList()
-        self.norm_layers = nn.ModuleList()
-        self.conv_layers.append(nn.Conv1d(in_channels, hidden_channels, kernel_size, padding=kernel_size // 2))
-        self.norm_layers.append(ChannelNorm(hidden_channels))
-        self.act_drop = nn.Sequential(nn.ReLU(), nn.Dropout(p_dropout))
-
-        for _ in range(n_layers - 1):
-            self.conv_layers.append(
-                nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size // 2)
-            )
-            self.norm_layers.append(ChannelNorm(hidden_channels))
-
-        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
-        self.proj.weight.data.zero_()
-        self.proj.bias.data.zero_()
-
-    def forward(self, x, x_mask):
-        residual = x
-        for i in range(self.n_layers):
-            x = self.act_drop(self.norm_layers[i](self.conv_layers[i](x * x_mask)))
-        return (residual + self.proj(x)) * x_mask
 
 
 
@@ -98,7 +62,7 @@ class DepthSepConv(nn.Module):
     def forward(self, x, x_mask, g=None):
         if g is not None:
             x = x + g
-            
+
         for i in range(self.n_layers):
             y = F.gelu(self.norms_1[i](self.dw_convs[i](x * x_mask)))
             y = self.drop(F.gelu(self.norms_2[i](self.pw_convs[i](y))))
@@ -153,7 +117,7 @@ class WaveNetBlock(torch.nn.Module):
 
         for i in range(self.n_layers):
             x_in = self.in_layers[i](x)
-            
+
             if cond is not None:
                 start = i * 2 * self.hidden_channels
                 end = (i + 1) * 2 * self.hidden_channels
@@ -379,50 +343,3 @@ class SplineFlow(nn.Module):
         x = torch.cat([x0, x1], 1) * x_mask
         logdet = torch.sum(logdet * x_mask, [1, 2])
         return (x, logdet) if not reverse else x
-
-
-
-
-
-class AttnCouplingLayer(nn.Module):
-    def __init__(self, channels, hidden_channels, kernel_size, n_layers, n_heads, p_dropout=0, filter_channels=0, mean_only=False, wn_sharing_parameter=None, gin_channels=0):
-        assert n_layers == 3, n_layers
-        assert channels % 2 == 0, "channels should be divisible by 2"
-        super().__init__()
-        self.half_channels = channels // 2
-        self.mean_only = mean_only
-
-        self.pre = nn.Conv1d(self.half_channels, hidden_channels, 1)
-        self.enc = (
-            TransformerEncoder(
-                hidden_channels,
-                filter_channels,
-                n_heads,
-                n_layers,
-                kernel_size,
-                p_dropout,
-                isflow = True,
-                gin_channels = gin_channels
-            )
-            if wn_sharing_parameter is None
-            else wn_sharing_parameter
-        )
-        self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
-        self.post.weight.data.zero_()
-        self.post.bias.data.zero_()
-
-    def forward(self, x, x_mask, g=None, reverse=False):
-        x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
-        h = self.enc(self.pre(x0) * x_mask, x_mask, g=g)
-        stats = self.post(h) * x_mask
-
-        if not self.mean_only:
-            m, logs = torch.split(stats, [self.half_channels] * 2, 1)
-        else:
-            m, logs = stats, torch.zeros_like(stats)
-
-        if not reverse:
-            x1 = (m + x1 * torch.exp(logs)) * x_mask
-            return torch.cat([x0, x1], 1), torch.sum(logs, [1, 2])
-        else:
-            return torch.cat([x0, (x1 - m) * torch.exp(-logs) * x_mask], 1)

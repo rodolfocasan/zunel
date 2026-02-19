@@ -7,7 +7,7 @@ from zunel.router import download_models, get_storage_path
 
 
 
-__version__ = '1.0.4'
+__version__ = '1.0.5'
 __all__ = [
     'TimbreConverter',
     'VoiceCloner',

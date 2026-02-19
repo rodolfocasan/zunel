@@ -1,5 +1,4 @@
 # zunel/audio/signal_processing.py
-import librosa
 import numpy as np
 from librosa.filters import mel as librosa_mel_fn
 
@@ -11,30 +10,11 @@ from torch.nn import functional as F
 
 
 
-MAX_WAV_VALUE = 32768.0
-
-_mel_basis_cache = {}
 _window_cache = {}
 
 DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3
 DEFAULT_MIN_DERIVATIVE = 1e-3
-
-
-def compress_dynamic_range(x, factor=1, floor=1e-5):
-    return torch.log(torch.clamp(x, min=floor) * factor)
-
-def decompress_dynamic_range(x, factor=1):
-    return torch.exp(x) / factor
-
-def normalize_spectrum(magnitudes):
-    return compress_dynamic_range(magnitudes)
-
-def denormalize_spectrum(magnitudes):
-    return decompress_dynamic_range(magnitudes)
-
-
-
 
 
 def compute_spectrogram(y, n_fft, sample_rate, hop_size, win_size, center=False):
@@ -45,6 +25,7 @@ def compute_spectrogram(y, n_fft, sample_rate, hop_size, win_size, center=False)
 
     global _window_cache
     cache_key = str(win_size) + "_" + str(y.dtype) + "_" + str(y.device)
+    
     if cache_key not in _window_cache:
         _window_cache[cache_key] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
 
@@ -68,85 +49,6 @@ def compute_spectrogram(y, n_fft, sample_rate, hop_size, win_size, center=False)
         return_complex = False,
     )
     return torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
-
-
-def compute_spectrogram_conv(y, n_fft, sample_rate, hop_size, win_size, center=False):
-    global _window_cache
-    cache_key = str(win_size) + "_" + str(y.dtype) + "_" + str(y.device)
-    
-    if cache_key not in _window_cache:
-        _window_cache[cache_key] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
-
-    y = torch.nn.functional.pad(
-        y.unsqueeze(1),
-        (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
-        mode = "reflect",
-    )
-
-    freq_cutoff = n_fft // 2 + 1
-    fft_basis = torch.view_as_real(torch.fft.fft(torch.eye(n_fft)))
-    fwd_basis = fft_basis[:freq_cutoff].permute(2, 0, 1).reshape(-1, 1, fft_basis.shape[1])
-    fwd_basis = fwd_basis * torch.as_tensor(
-        librosa.util.pad_center(torch.hann_window(win_size), size=n_fft)
-    ).float()
-
-    assert center is False
-    out = F.conv1d(y, fwd_basis.to(y.device), stride=hop_size)
-    spec2 = torch.stack([out[:, :freq_cutoff, :], out[:, freq_cutoff:, :]], dim=-1)
-
-    spec1 = torch.stft(
-        y.squeeze(1), n_fft, hop_length=hop_size, win_length=win_size,
-        window=_window_cache[cache_key], center=center, pad_mode="reflect",
-        normalized=False, onesided=True, return_complex=False,
-    )
-    assert torch.allclose(spec1, spec2, atol=1e-4)
-    return torch.sqrt(spec2.pow(2).sum(-1) + 1e-6)
-
-
-def spec_to_mel(spec, n_fft, n_mels, sample_rate, fmin, fmax):
-    global _mel_basis_cache
-    cache_key = str(fmax) + "_" + str(spec.dtype) + "_" + str(spec.device)
-    
-    if cache_key not in _mel_basis_cache:
-        mel_fb = librosa_mel_fn(sample_rate, n_fft, n_mels, fmin, fmax)
-        _mel_basis_cache[cache_key] = torch.from_numpy(mel_fb).to(dtype=spec.dtype, device=spec.device)
-    
-    spec = torch.matmul(_mel_basis_cache[cache_key], spec)
-    return normalize_spectrum(spec)
-
-
-def compute_mel_spectrogram(y, n_fft, n_mels, sample_rate, hop_size, win_size, fmin, fmax, center=False):
-    if torch.min(y) < -1.0:
-        print("[zunel] min value is ", torch.min(y))
-    if torch.max(y) > 1.0:
-        print("[zunel] max value is ", torch.max(y))
-
-    global _mel_basis_cache, _window_cache
-    mel_key = str(fmax) + "_" + str(y.dtype) + "_" + str(y.device)
-    win_key = str(win_size) + "_" + str(y.dtype) + "_" + str(y.device)
-
-    if mel_key not in _mel_basis_cache:
-        mel_fb = librosa_mel_fn(sample_rate, n_fft, n_mels, fmin, fmax)
-        _mel_basis_cache[mel_key] = torch.from_numpy(mel_fb).to(dtype=y.dtype, device=y.device)
-    
-    if win_key not in _window_cache:
-        _window_cache[win_key] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
-
-    y = torch.nn.functional.pad(
-        y.unsqueeze(1),
-        (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
-        mode = "reflect",
-    )
-    y = y.squeeze(1)
-
-    spec = torch.stft(
-        y, n_fft, hop_length=hop_size, win_length=win_size,
-        window=_window_cache[win_key], center=center, pad_mode="reflect",
-        normalized=False, onesided=True, return_complex=False,
-    )
-    spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
-    spec = torch.matmul(_mel_basis_cache[mel_key], spec)
-    return normalize_spectrum(spec)
 
 
 def rational_quadratic_transform(
@@ -249,10 +151,10 @@ def _bounded_rq_spline(
         raise ValueError("[zunel] Input to a transform is not within its domain")
 
     num_bins = unnormalized_widths.shape[-1]
-    
+
     if min_bin_width * num_bins > 1.0:
         raise ValueError("[zunel] Minimal bin width too large for the number of bins")
-    
+
     if min_bin_height * num_bins > 1.0:
         raise ValueError("[zunel] Minimal bin height too large for the number of bins")
 
