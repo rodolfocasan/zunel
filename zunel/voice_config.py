@@ -5,7 +5,7 @@
 
 
 VOICE_REGISTRY = {
-    'es-latino': {
+    'es-latam': {
         'male': [
             'es-CL-LorenzoNeural',
             'es-MX-JorgeNeural'
@@ -16,7 +16,7 @@ VOICE_REGISTRY = {
             'es-EC-AndreaNeural'
         ]
     },
-    'es-spain': {
+    'es-es': {
         'male': [
             'es-ES-AlvaroNeural'
         ],

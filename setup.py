@@ -7,7 +7,7 @@ from setuptools import setup, find_packages
 
 setup(
     name = "zunel",
-    version = "1.0.2",
+    version = "1.0.3",
     packages = find_packages(),
     install_requires = [
         "torch>=2.0.0",
@@ -15,8 +15,7 @@ setup(
         "soundfile",
         "librosa",
         "pydub",
-        "faster-whisper",
-        "whisper-timestamped",
+        "SpeechRecognition",
         "langid",
         "gradio",
         "inflect",

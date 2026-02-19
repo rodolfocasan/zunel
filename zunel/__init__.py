@@ -6,7 +6,7 @@ from zunel.voice_config import get_voice, VOICE_REGISTRY
 
 
 
-__version__ = '1.0.2'
+__version__ = '1.0.3'
 __all__ = [
     'TimbreConverter',
     'VoiceCloner',
