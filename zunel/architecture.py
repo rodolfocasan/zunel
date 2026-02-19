@@ -12,6 +12,9 @@ from zunel import attention
 from zunel.helpers import initialize_weights, compute_padding
 
 
+
+
+
 class PhoneticEncoder(nn.Module):
     def __init__(self, n_vocab, out_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout):
         super().__init__()
@@ -41,6 +44,9 @@ class PhoneticEncoder(nn.Module):
         return x, m, logs, x_mask
 
 
+
+
+
 class TemporalPredictor(nn.Module):
     def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, gin_channels=0):
         super().__init__()
@@ -68,6 +74,9 @@ class TemporalPredictor(nn.Module):
         x = self.drop(self.norm_1(torch.relu(self.conv_1(x * x_mask))))
         x = self.drop(self.norm_2(torch.relu(self.conv_2(x * x_mask))))
         return self.proj(x * x_mask) * x_mask
+
+
+
 
 
 class StochasticTemporalPredictor(nn.Module):
@@ -150,6 +159,9 @@ class StochasticTemporalPredictor(nn.Module):
             return torch.split(z, [1, 1], 1)[0]
 
 
+
+
+
 class VariationalEncoder(nn.Module):
     def __init__(self, in_channels, out_channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=0):
         super().__init__()
@@ -172,6 +184,9 @@ class VariationalEncoder(nn.Module):
         m, logs = torch.split(stats, self.out_channels, dim=1)
         z = (m + torch.randn_like(m) * tau * torch.exp(logs)) * x_mask
         return z, m, logs, x_mask
+
+
+
 
 
 class WaveDecoder(torch.nn.Module):
@@ -240,6 +255,9 @@ class WaveDecoder(torch.nn.Module):
             l.remove_weight_norm()
 
 
+
+
+
 class SpeakerEmbedder(nn.Module):
     def __init__(self, spec_channels, gin_channels=0, layernorm=True):
         super().__init__()
@@ -280,6 +298,9 @@ class SpeakerEmbedder(nn.Module):
         return L
 
 
+
+
+
 class NormalizingFlowBlock(nn.Module):
     def __init__(self, channels, hidden_channels, kernel_size, dilation_rate, n_layers, n_flows=4, gin_channels=0):
         super().__init__()
@@ -307,6 +328,9 @@ class NormalizingFlowBlock(nn.Module):
             else:
                 x = flow(x, x_mask, g=g, reverse=reverse)
         return x
+
+
+
 
 
 class VoiceSynthesizer(nn.Module):

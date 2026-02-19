@@ -3,10 +3,10 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='zunel',
-    version='1.0.3',
-    packages=find_packages(),
-    install_requires=[
+    name = 'zunel',
+    version = '1.0.3',
+    packages = find_packages(),
+    install_requires = [
         'torch>=2.0.0',
         'numpy',
         'soundfile',
@@ -27,5 +27,5 @@ setup(
         'praat-parselmouth',
         'pyloudnorm'
     ],
-    python_requires='>=3.8',
+    python_requires = '>=3.8',
 )

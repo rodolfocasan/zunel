@@ -17,39 +17,37 @@ from zunel.adapters import SpeakerAdapter
 from zunel.processing import enhance_tts
 
 
+
+
+
 _MAX_REF_DURATION = 8.0
 
 
 def _remove_all_weight_norm(model):
     from torch.nn.utils import remove_weight_norm
 
-    # WaveDecoder: ups (ConvTranspose1d) + ResidualStack Conv1d layers
     try:
         model.wave_decoder.remove_weight_norm()
     except Exception:
         pass
 
-    # SpeakerEmbedder: Conv2d layers
     for conv in model.speaker_embedder.convs:
         try:
             remove_weight_norm(conv)
         except Exception:
             pass
 
-    # VariationalEncoder → WaveNetBlock (in_layers, res_skip_layers, cond_layer)
     try:
         model.var_encoder.enc.remove_weight_norm()
     except Exception:
         pass
 
-    # NormalizingFlowBlock → CouplingLayer → WaveNetBlock
     for flow in model.norm_flow.flows:
         if hasattr(flow, 'enc') and hasattr(flow.enc, 'remove_weight_norm'):
             try:
                 flow.enc.remove_weight_norm()
             except Exception:
                 pass
-
     print('[zunel] Weight norm removed from WaveDecoder, SpeakerEmbedder, VariationalEncoder, NormalizingFlow')
 
 
@@ -67,7 +65,6 @@ def _quantize_linear_torchao(model):
         return True
     except (ImportError, Exception):
         pass
-
     return False
 
 
@@ -75,8 +72,8 @@ def _quantize_gru_legacy(model):
     torch.ao.quantization.quantize_dynamic(
         model,
         {torch.nn.GRU},
-        dtype=torch.qint8,
-        inplace=True
+        dtype = torch.qint8,
+        inplace = True
     )
 
 
@@ -84,9 +81,12 @@ def _quantize_all_legacy(model):
     torch.ao.quantization.quantize_dynamic(
         model,
         {torch.nn.Linear, torch.nn.GRU},
-        dtype=torch.qint8,
-        inplace=True
+        dtype = torch.qint8,
+        inplace = True
     )
+
+
+
 
 
 class SynthBase(object):
@@ -107,7 +107,7 @@ class SynthBase(object):
         model = VoiceSynthesizer(
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
-            n_speakers=cfg.audio.num_speakers,
+            n_speakers = cfg.audio.num_speakers,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -121,6 +121,9 @@ class SynthBase(object):
         missing, unexpected = self.model.load_state_dict(ckpt['model'], strict=False)
         print("[zunel] Loaded checkpoint '{}'".format(ckpt_path))
         print('[zunel] missing/unexpected keys:', missing, unexpected)
+
+
+
 
 
 class TimbreConverter(SynthBase):
@@ -144,30 +147,22 @@ class TimbreConverter(SynthBase):
             pass
 
         self.model.eval()
-
-        # Remove weight_norm first: materializes weight_g/weight_v into plain tensors.
-        # This eliminates 90+ redundant norm recomputations per forward pass (WaveDecoder,
-        # WaveNetBlock, SpeakerEmbedder). Also makes legacy quantize deepcopy safe.
         _remove_all_weight_norm(self.model)
 
         if quantize:
             ao_ok = _quantize_linear_torchao(self.model)
             if ao_ok:
                 _quantize_gru_legacy(self.model)
-                print('[zunel] INT8: Linear via torchao + GRU via legacy dynamic quant')
             else:
                 _quantize_all_legacy(self.model)
-                print('[zunel] INT8: Linear + GRU via legacy dynamic quant (inplace)')
 
         if compile_model and hasattr(torch, 'compile'):
             try:
                 self.model = torch.compile(self.model, mode='reduce-overhead')
-                print('[zunel] Model compiled with torch.compile')
             except Exception as e:
                 print(f'[zunel] torch.compile skipped: {e}')
 
         print(f'[zunel] CPU threads: {cpu_count} | interop: {max(1, cpu_count // 2)}')
-        print('[zunel] Model optimized for CPU inference')
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
@@ -206,9 +201,9 @@ class TimbreConverter(SynthBase):
 
             audio_ref, _ = librosa.load(
                 fname,
-                sr=self.cfg.audio.sample_rate,
-                duration=_MAX_REF_DURATION,
-                mono=True
+                sr = self.cfg.audio.sample_rate,
+                duration = _MAX_REF_DURATION,
+                mono = True
             )
             y = torch.FloatTensor(audio_ref).to(self.device).unsqueeze(0)
 
@@ -257,6 +252,9 @@ class TimbreConverter(SynthBase):
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
 
+
+
+
 class VoiceCloner:
     def __init__(self, converter, tts_generator):
         self.converter = converter
@@ -292,12 +290,12 @@ class VoiceCloner:
         tts_enhanced_path = os.path.join(self.temp_dir, 'tts_enhanced.wav')
 
         await self.tts_generator.save(
-            text=target_text,
-            voice=voice,
-            pitch="+0Hz",
-            rate="+0%",
-            volume="+0%",
-            output_file=tts_raw_path
+            text = target_text,
+            voice = voice,
+            pitch = "+0Hz",
+            rate = "+0%",
+            volume = "+0%",
+            output_file = tts_raw_path
         )
 
         enhance_tts(tts_raw_path, tts_enhanced_path, sr=self.converter.cfg.audio.sample_rate)
@@ -308,11 +306,11 @@ class VoiceCloner:
 
         print("[zunel] Performing voice conversion...")
         self.converter.convert(
-            audio_src_path=tts_enhanced_path,
-            src_se=source_se,
-            tgt_se=target_se,
-            output_path=output_path,
-            tau=tau
+            audio_src_path = tts_enhanced_path,
+            src_se = source_se,
+            tgt_se = target_se,
+            output_path = output_path,
+            tau = tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path

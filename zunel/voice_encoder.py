@@ -10,6 +10,9 @@ from pydub import AudioSegment
 import torch
 
 
+
+
+
 _silero_model = None
 _silero_get_ts = None
 _silero_read_audio = None
@@ -35,7 +38,6 @@ def _load_silero():
         _silero_model = model
         _silero_get_ts = utils[0]
         _silero_read_audio = utils[2]
-
     return _silero_model, _silero_get_ts, _silero_read_audio
 
 
@@ -97,7 +99,6 @@ def segment_with_asr(audio_path, audio_name, target_dir='processed'):
                     pass
             chunk.export(out_path, format='wav')
             seg_idx += 1
-
     return wavs_dir
 
 
@@ -110,10 +111,10 @@ def segment_with_vad(audio_path, audio_name, target_dir, split_seconds=10.0):
     timestamps = get_speech_timestamps(
         wav,
         vad_model,
-        sampling_rate=SAMPLE_RATE,
-        min_speech_duration_ms=100,
-        min_silence_duration_ms=1000,
-        return_seconds=False
+        sampling_rate = SAMPLE_RATE,
+        min_speech_duration_ms = 100,
+        min_silence_duration_ms = 1000,
+        return_seconds = False
     )
 
     audio_full = AudioSegment.from_file(audio_path)
@@ -145,7 +146,6 @@ def segment_with_vad(audio_path, audio_name, target_dir, split_seconds=10.0):
         chunk.export(out_path, format='wav')
         t0 = t1
         count += 1
-
     return wavs_dir
 
 
