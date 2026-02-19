@@ -91,14 +91,13 @@ class TimbreConverter(SynthBase):
             print(f"[zunel] CPU threads set to {num_threads}")
 
         if quantize:
-            self.model = torch.quantization.quantize_dynamic(
+            torch.quantization.quantize_dynamic(
                 self.model,
                 {nn.Linear, nn.GRU},
-                dtype = torch.qint8
+                dtype=torch.qint8,
+                inplace=True
             )
             self.model.eval()
-            self.speaker_adapter_src = getattr(self.model, 'speaker_adapter_src', self.speaker_adapter_src)
-            self.speaker_adapter_tgt = getattr(self.model, 'speaker_adapter_tgt', self.speaker_adapter_tgt)
             print("[zunel] Dynamic INT8 quantization applied (Linear + GRU)")
 
         if compile_model:
@@ -110,6 +109,7 @@ class TimbreConverter(SynthBase):
                     print(f"[zunel] torch.compile skipped: {e}")
             else:
                 print("[zunel] torch.compile requires PyTorch 2.0+")
+
         return self
 
     def optimize_for_gpu(self):
