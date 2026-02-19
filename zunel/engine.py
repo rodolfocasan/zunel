@@ -20,29 +20,44 @@ from zunel.processing import enhance_tts
 _MAX_REF_DURATION = 8.0
 
 
+def _load_audio(path, sr, duration=None):
+    try:
+        info = soundfile.info(path)
+        max_frames = int(duration * info.samplerate) if duration is not None else -1
+        data, orig_sr = soundfile.read(
+            path,
+            frames=max_frames if max_frames > 0 else -1,
+            dtype='float32',
+            always_2d=False,
+        )
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if orig_sr != sr:
+            data = librosa.resample(data, orig_sr=orig_sr, target_sr=sr, res_type='soxr_hq')
+    except Exception:
+        data, _ = librosa.load(path, sr=sr, duration=duration, mono=True)
+    return data
+
+
 def _remove_all_weight_norm(model):
     from torch.nn.utils import remove_weight_norm
 
-    # WaveDecoder: ups (ConvTranspose1d) + ResidualStack Conv1d layers
     try:
         model.wave_decoder.remove_weight_norm()
     except Exception:
         pass
 
-    # SpeakerEmbedder: Conv2d layers
     for conv in model.speaker_embedder.convs:
         try:
             remove_weight_norm(conv)
         except Exception:
             pass
 
-    # VariationalEncoder → WaveNetBlock (in_layers, res_skip_layers, cond_layer)
     try:
         model.var_encoder.enc.remove_weight_norm()
     except Exception:
         pass
 
-    # NormalizingFlowBlock → CouplingLayer → WaveNetBlock
     for flow in model.norm_flow.flows:
         if hasattr(flow, 'enc') and hasattr(flow.enc, 'remove_weight_norm'):
             try:
@@ -51,6 +66,27 @@ def _remove_all_weight_norm(model):
                 pass
 
     print('[zunel] Weight norm removed from WaveDecoder, SpeakerEmbedder, VariationalEncoder, NormalizingFlow')
+
+
+def _trace_wave_decoder(model):
+    torch.jit.enable_onednn_fusion(True)
+
+    latent_ch = model.wave_decoder.conv_pre.in_channels
+    emb_dim = model.wave_decoder.cond.in_channels if hasattr(model.wave_decoder, 'cond') else 256
+
+    dummy_z = torch.zeros(1, latent_ch, 64)
+    dummy_g = torch.zeros(1, emb_dim, 1)
+
+    with torch.inference_mode():
+        try:
+            traced = torch.jit.trace(model.wave_decoder, (dummy_z, dummy_g), check_trace=False)
+            traced = torch.jit.freeze(traced.eval())
+            traced(dummy_z, dummy_g)
+            traced(dummy_z, dummy_g)
+            model.wave_decoder = traced
+            print('[zunel] WaveDecoder traced, frozen and warmed up (oneDNN fusion active)')
+        except Exception as e:
+            print(f'[zunel] WaveDecoder trace skipped: {e}')
 
 
 def _quantize_linear_torchao(model):
@@ -76,7 +112,7 @@ def _quantize_gru_legacy(model):
         model,
         {torch.nn.GRU},
         dtype=torch.qint8,
-        inplace=True
+        inplace=True,
     )
 
 
@@ -85,7 +121,7 @@ def _quantize_all_legacy(model):
         model,
         {torch.nn.Linear, torch.nn.GRU},
         dtype=torch.qint8,
-        inplace=True
+        inplace=True,
     )
 
 
@@ -94,7 +130,7 @@ class SynthBase(object):
         if device == 'auto':
             device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         elif 'cuda' in device and not torch.cuda.is_available():
-            print(f"[zunel] WARNING: CUDA requested but not available, falling back to CPU")
+            print('[zunel] WARNING: CUDA requested but not available, falling back to CPU')
             device = 'cpu'
 
         random.seed(42)
@@ -126,15 +162,36 @@ class SynthBase(object):
 class TimbreConverter(SynthBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.version = getattr(self.cfg, '_release_', "1.0.0")
+        self.version = getattr(self.cfg, '_release_', '1.0.0')
         self.speaker_adapter_src = None
         self.speaker_adapter_tgt = None
         self._se_cache = {}
+
+    def _warmup_inference(self):
+        cfg = self.cfg
+        n_freq = cfg.audio.fft_size // 2 + 1
+        emb_dim = getattr(cfg.architecture, 'embedding_dim', 256)
+        T = 64
+
+        dummy_spec = torch.zeros(1, n_freq, T)
+        dummy_lengths = torch.LongTensor([T])
+        dummy_se = torch.zeros(1, emb_dim, 1)
+
+        with torch.inference_mode():
+            for _ in range(2):
+                try:
+                    self.model.voice_conversion(dummy_spec, dummy_lengths, dummy_se, dummy_se)
+                except Exception:
+                    break
+
+        print('[zunel] Inference warmup complete (MKLDNN primitive cache populated)')
 
     def optimize_for_cpu(self, quantize=True, compile_model=False):
         if 'cuda' in str(self.device):
             self.model = self.model.cpu()
             self.device = 'cpu'
+
+        os.environ.setdefault('LRU_CACHE_CAPACITY', '1024')
 
         cpu_count = os.cpu_count() or 4
         torch.set_num_threads(cpu_count)
@@ -145,9 +202,6 @@ class TimbreConverter(SynthBase):
 
         self.model.eval()
 
-        # Remove weight_norm first: materializes weight_g/weight_v into plain tensors.
-        # This eliminates 90+ redundant norm recomputations per forward pass (WaveDecoder,
-        # WaveNetBlock, SpeakerEmbedder). Also makes legacy quantize deepcopy safe.
         _remove_all_weight_norm(self.model)
 
         if quantize:
@@ -158,6 +212,9 @@ class TimbreConverter(SynthBase):
             else:
                 _quantize_all_legacy(self.model)
                 print('[zunel] INT8: Linear + GRU via legacy dynamic quant (inplace)')
+
+        _trace_wave_decoder(self.model)
+        self._warmup_inference()
 
         if compile_model and hasattr(torch, 'compile'):
             try:
@@ -171,7 +228,7 @@ class TimbreConverter(SynthBase):
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
-            print(f"[zunel] No adapters found at {adapter_path}")
+            print(f'[zunel] No adapters found at {adapter_path}')
             return
 
         checkpoint = torch.load(adapter_path, map_location=self.device, weights_only=False)
@@ -187,7 +244,7 @@ class TimbreConverter(SynthBase):
         self.speaker_adapter_tgt.eval()
 
         self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
-        print(f"[zunel] Loaded speaker adapters from {adapter_path}")
+        print(f'[zunel] Loaded speaker adapters from {adapter_path}')
 
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
@@ -204,12 +261,7 @@ class TimbreConverter(SynthBase):
                 embeddings.append(self._se_cache[cache_key])
                 continue
 
-            audio_ref, _ = librosa.load(
-                fname,
-                sr=self.cfg.audio.sample_rate,
-                duration=_MAX_REF_DURATION,
-                mono=True
-            )
+            audio_ref = _load_audio(fname, self.cfg.audio.sample_rate, duration=_MAX_REF_DURATION)
             y = torch.FloatTensor(audio_ref).to(self.device).unsqueeze(0)
 
             spec = compute_spectrogram(
@@ -237,7 +289,7 @@ class TimbreConverter(SynthBase):
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):
         cfg = self.cfg
-        audio, _ = librosa.load(audio_src_path, sr=cfg.audio.sample_rate)
+        audio = _load_audio(audio_src_path, cfg.audio.sample_rate)
 
         with torch.inference_mode():
             y = torch.FloatTensor(audio).to(self.device).unsqueeze(0)
@@ -262,12 +314,12 @@ class VoiceCloner:
         self.converter = converter
         self.tts_generator = tts_generator
         self.temp_dir = tempfile.mkdtemp(prefix='zunel_')
-        print(f"[zunel] Temporary directory created: {self.temp_dir}")
+        print(f'[zunel] Temporary directory created: {self.temp_dir}')
 
     def __del__(self):
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
-            print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
+            print(f'[zunel] Temporary directory cleaned: {self.temp_dir}')
 
     async def clone_voice(
         self,
@@ -277,14 +329,14 @@ class VoiceCloner:
         gender,
         output_path,
         voice_version=0,
-        tau=0.3
+        tau=0.3,
     ):
         if not os.path.exists(reference_audio_path):
-            raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
+            raise FileNotFoundError(f'[zunel] Reference audio not found: {reference_audio_path}')
 
-        print(f"[zunel] Starting voice cloning...")
-        print(f"[zunel] Reference: {reference_audio_path}")
-        print(f"[zunel] Target language: {target_language} | Gender: {gender} | Tau: {tau}")
+        print('[zunel] Starting voice cloning...')
+        print(f'[zunel] Reference: {reference_audio_path}')
+        print(f'[zunel] Target language: {target_language} | Gender: {gender} | Tau: {tau}')
 
         voice = voice_config.get_voice(target_language, gender, voice_version)
 
@@ -294,25 +346,25 @@ class VoiceCloner:
         await self.tts_generator.save(
             text=target_text,
             voice=voice,
-            pitch="+0Hz",
-            rate="+0%",
-            volume="+0%",
-            output_file=tts_raw_path
+            pitch='+0Hz',
+            rate='+0%',
+            volume='+0%',
+            output_file=tts_raw_path,
         )
 
         enhance_tts(tts_raw_path, tts_enhanced_path, sr=self.converter.cfg.audio.sample_rate)
 
-        print("[zunel] Extracting embeddings...")
+        print('[zunel] Extracting embeddings...')
         target_se = self.converter.extract_se([reference_audio_path])
         source_se = self.converter.extract_se([tts_enhanced_path])
 
-        print("[zunel] Performing voice conversion...")
+        print('[zunel] Performing voice conversion...')
         self.converter.convert(
             audio_src_path=tts_enhanced_path,
             src_se=source_se,
             tgt_se=target_se,
             output_path=output_path,
-            tau=tau
+            tau=tau,
         )
-        print(f"[zunel] Voice cloning complete: {output_path}")
+        print(f'[zunel] Voice cloning complete: {output_path}')
         return output_path
