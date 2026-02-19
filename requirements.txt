@@ -3,6 +3,7 @@ numpy
 soundfile
 librosa
 pydub
+silero-vad
 SpeechRecognition
 langid
 gradio

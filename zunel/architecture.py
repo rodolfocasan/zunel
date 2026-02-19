@@ -70,7 +70,7 @@ class TemporalPredictor(nn.Module):
         x = torch.detach(x)
         if g is not None:
             x = x + self.cond(torch.detach(g))
-
+        
         x = self.drop(self.norm_1(torch.relu(self.conv_1(x * x_mask))))
         x = self.drop(self.norm_2(torch.relu(self.conv_2(x * x_mask))))
         return self.proj(x * x_mask) * x_mask
@@ -102,7 +102,7 @@ class StochasticTemporalPredictor(nn.Module):
         self.post_convs = layers.DepthSepConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
         self.post_flows = nn.ModuleList()
         self.post_flows.append(layers.AffineLayer(2))
-
+        
         for i in range(4):
             self.post_flows.append(layers.SplineFlow(2, filter_channels, kernel_size, n_layers=3))
             self.post_flows.append(layers.FlipLayer())
@@ -110,14 +110,14 @@ class StochasticTemporalPredictor(nn.Module):
         self.pre = nn.Conv1d(in_channels, filter_channels, 1)
         self.proj = nn.Conv1d(filter_channels, filter_channels, 1)
         self.convs = layers.DepthSepConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
-
+        
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
 
     def forward(self, x, x_mask, w=None, g=None, reverse=False, noise_scale=1.0):
         x = torch.detach(x)
         x = self.pre(x)
-
+        
         if g is not None:
             x = x + self.cond(torch.detach(g))
         x = self.proj(self.convs(x, x_mask)) * x_mask
@@ -128,11 +128,11 @@ class StochasticTemporalPredictor(nn.Module):
             h_w = self.post_proj(self.post_convs(self.post_pre(w), x_mask)) * x_mask
             e_q = torch.randn(w.size(0), 2, w.size(2)).to(device=x.device, dtype=x.dtype) * x_mask
             z_q = e_q
-
+            
             for flow in self.post_flows:
                 z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
                 logdet_tot_q += logdet_q
-
+            
             z_u, z1 = torch.split(z_q, [1, 1], 1)
             u = torch.sigmoid(z_u) * x_mask
             z0 = (w - u) * x_mask
@@ -143,7 +143,7 @@ class StochasticTemporalPredictor(nn.Module):
             z0, logdet = self.log_flow(z0, x_mask)
             logdet_tot += logdet
             z = torch.cat([z0, z1], 1)
-
+            
             for flow in self.flows:
                 z, logdet = flow(z, x_mask, g=x, reverse=reverse)
                 logdet_tot += logdet
@@ -153,7 +153,7 @@ class StochasticTemporalPredictor(nn.Module):
             active_flows = list(reversed(self.flows))
             active_flows = active_flows[:-2] + [active_flows[-1]]
             z = torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype) * noise_scale
-
+            
             for flow in active_flows:
                 z = flow(z, x_mask, g=x, reverse=reverse)
             return torch.split(z, [1, 1], 1)[0]
@@ -250,7 +250,7 @@ class WaveDecoder(torch.nn.Module):
         print("[zunel] Removing weight norm...")
         for l in self.ups:
             remove_weight_norm(l)
-
+        
         for l in self.resblocks:
             l.remove_weight_norm()
 
@@ -277,18 +277,17 @@ class SpeakerEmbedder(nn.Module):
     def forward(self, inputs, mask=None):
         N = inputs.size(0)
         out = inputs.view(N, 1, -1, self.spec_channels)
-
+        
         if self.layernorm is not None:
             out = self.layernorm(out)
-
+        
         for conv in self.convs:
             out = F.relu(conv(out))
-
+        
         out = out.transpose(1, 2)
         T, N2 = out.size(1), out.size(0)
         out = out.contiguous().view(N2, T, -1)
-        if hasattr(self.gru, 'flatten_parameters'):
-            self.gru.flatten_parameters()
+        self.gru.flatten_parameters()
         _, out = self.gru(out)
         return self.proj(out.squeeze(0))
 
@@ -321,7 +320,7 @@ class NormalizingFlowBlock(nn.Module):
 
     def forward(self, x, x_mask, g=None, reverse=False):
         flow_seq = reversed(self.flows) if reverse else self.flows
-
+        
         for flow in flow_seq:
             if not reverse:
                 x, _ = flow(x, x_mask, g=g, reverse=reverse)
@@ -375,7 +374,7 @@ class VoiceSynthesizer(nn.Module):
             self.dp = TemporalPredictor(base_channels, 256, 3, 0.5, gin_channels=embedding_dim)
             self.emb_g = nn.Embedding(n_speakers, embedding_dim)
         self.zero_g = zero_g
-
+        
         self.speaker_adapter_src = None
         self.speaker_adapter_tgt = None
 
@@ -407,10 +406,10 @@ class VoiceSynthesizer(nn.Module):
     def voice_conversion(self, y, y_lengths, sid_src, sid_tgt, tau=1.0):
         g_src = sid_src
         g_tgt = sid_tgt
-
+        
         if self.speaker_adapter_src is not None:
             g_src = self.speaker_adapter_src(g_src.squeeze(-1)).unsqueeze(-1)
-
+        
         if self.speaker_adapter_tgt is not None:
             g_tgt = self.speaker_adapter_tgt(g_tgt.squeeze(-1)).unsqueeze(-1)
 

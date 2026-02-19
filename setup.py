@@ -2,32 +2,30 @@
 from setuptools import setup, find_packages
 
 
-
-
-
 setup(
-    name = "zunel",
-    version = "1.0.3",
-    packages = find_packages(),
-    install_requires = [
-        "torch>=2.0.0",
-        "numpy",
-        "soundfile",
-        "librosa",
-        "pydub",
-        "SpeechRecognition",
-        "langid",
-        "gradio",
-        "inflect",
-        "unidecode",
-        "eng-to-ipa",
-        "pypinyin",
-        "jieba",
-        "cn2an",
-        "pykakasi",
-        "jamo",
-        "praat-parselmouth",
-        "pyloudnorm"
+    name='zunel',
+    version='1.0.3',
+    packages=find_packages(),
+    install_requires=[
+        'torch>=2.0.0',
+        'numpy',
+        'soundfile',
+        'librosa',
+        'pydub',
+        'silero-vad',
+        'SpeechRecognition',
+        'langid',
+        'gradio',
+        'inflect',
+        'unidecode',
+        'eng-to-ipa',
+        'pypinyin',
+        'jieba',
+        'cn2an',
+        'pykakasi',
+        'jamo',
+        'praat-parselmouth',
+        'pyloudnorm'
     ],
-    python_requires = ">=3.8",
+    python_requires='>=3.8',
 )

@@ -8,7 +8,6 @@ import soundfile
 import numpy as np
 
 import torch
-import torch.nn as nn
 
 from zunel import helpers
 from zunel import voice_config
@@ -18,7 +17,7 @@ from zunel.adapters import SpeakerAdapter
 from zunel.processing import enhance_tts
 
 
-
+_MAX_REF_DURATION = 8.0
 
 
 class SynthBase(object):
@@ -39,7 +38,7 @@ class SynthBase(object):
         model = VoiceSynthesizer(
             len(getattr(cfg, 'symbols', [])),
             cfg.audio.fft_size // 2 + 1,
-            n_speakers = cfg.audio.num_speakers,
+            n_speakers=cfg.audio.num_speakers,
             **cfg.architecture,
         ).to(device)
         model.eval()
@@ -55,15 +54,42 @@ class SynthBase(object):
         print('[zunel] missing/unexpected keys:', missing, unexpected)
 
 
-
-
-
 class TimbreConverter(SynthBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.version = getattr(self.cfg, '_release_', "1.0.0")
         self.speaker_adapter_src = None
         self.speaker_adapter_tgt = None
+        self._se_cache = {}
+
+    def optimize_for_cpu(self, quantize=True, compile_model=False):
+        if 'cuda' in str(self.device):
+            self.model = self.model.cpu()
+            self.device = 'cpu'
+
+        cpu_count = os.cpu_count() or 4
+        torch.set_num_threads(cpu_count)
+        torch.set_num_interop_threads(max(1, cpu_count // 2))
+
+        self.model.eval()
+
+        if quantize:
+            self.model = torch.quantization.quantize_dynamic(
+                self.model,
+                {torch.nn.Linear, torch.nn.GRU},
+                dtype=torch.qint8
+            )
+            print('[zunel] Applied INT8 dynamic quantization (Linear, GRU)')
+
+        if compile_model and hasattr(torch, 'compile'):
+            try:
+                self.model = torch.compile(self.model, mode='reduce-overhead')
+                print('[zunel] Model compiled with torch.compile')
+            except Exception as e:
+                print(f'[zunel] torch.compile skipped: {e}')
+
+        print(f'[zunel] CPU threads: {cpu_count} | interop: {max(1, cpu_count // 2)}')
+        print('[zunel] Model optimized for CPU inference')
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
@@ -85,56 +111,27 @@ class TimbreConverter(SynthBase):
         self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
         print(f"[zunel] Loaded speaker adapters from {adapter_path}")
 
-    def optimize_for_cpu(self, quantize=True, compile_model=False, num_threads=None):
-        if num_threads is not None:
-            torch.set_num_threads(num_threads)
-            print(f"[zunel] CPU threads set to {num_threads}")
-
-        if quantize:
-            torch.quantization.quantize_dynamic(
-                self.model,
-                {nn.Linear, nn.GRU},
-                dtype=torch.qint8,
-                inplace=True
-            )
-            self.model.eval()
-            print("[zunel] Dynamic INT8 quantization applied (Linear + GRU)")
-
-        if compile_model:
-            if hasattr(torch, 'compile'):
-                try:
-                    self.model = torch.compile(self.model, mode='reduce-overhead')
-                    print("[zunel] torch.compile applied")
-                except Exception as e:
-                    print(f"[zunel] torch.compile skipped: {e}")
-            else:
-                print("[zunel] torch.compile requires PyTorch 2.0+")
-
-        return self
-
-    def optimize_for_gpu(self):
-        if 'cuda' not in self.device:
-            print("[zunel] optimize_for_gpu requires a CUDA device")
-            return self
-
-        self.model = self.model.half()
-        self.model.eval()
-
-        if self.speaker_adapter_src is not None:
-            self.speaker_adapter_src = self.speaker_adapter_src.half()
-            self.speaker_adapter_tgt = self.speaker_adapter_tgt.half()
-            self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
-
-        print("[zunel] FP16 half-precision applied for GPU")
-        return self
-
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
 
         embeddings = []
         for fname in ref_wav_list:
-            audio_ref, sr = librosa.load(fname, sr=self.cfg.audio.sample_rate)
+            try:
+                cache_key = (fname, os.path.getmtime(fname))
+            except OSError:
+                cache_key = None
+
+            if cache_key is not None and cache_key in self._se_cache:
+                embeddings.append(self._se_cache[cache_key])
+                continue
+
+            audio_ref, _ = librosa.load(
+                fname,
+                sr=self.cfg.audio.sample_rate,
+                duration=_MAX_REF_DURATION,
+                mono=True
+            )
             y = torch.FloatTensor(audio_ref).to(self.device).unsqueeze(0)
 
             spec = compute_spectrogram(
@@ -142,14 +139,20 @@ class TimbreConverter(SynthBase):
                 self.cfg.audio.frame_shift, self.cfg.audio.frame_length, center=False,
             ).to(self.device)
 
-            with torch.inference_mode():
+            with torch.no_grad():
                 g = self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
-                embeddings.append(g.detach())
+                emb = g.detach().cpu()
 
-        embedding = torch.stack(embeddings).mean(0)
+            if cache_key is not None:
+                self._se_cache[cache_key] = emb
+            embeddings.append(emb)
+
+        embedding = torch.stack(embeddings).mean(0).to(self.device)
 
         if se_save_path is not None:
-            os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
+            parent = os.path.dirname(se_save_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
 
         return embedding
@@ -158,7 +161,7 @@ class TimbreConverter(SynthBase):
         cfg = self.cfg
         audio, _ = librosa.load(audio_src_path, sr=cfg.audio.sample_rate)
 
-        with torch.inference_mode():
+        with torch.no_grad():
             y = torch.FloatTensor(audio).to(self.device).unsqueeze(0)
 
             spec = compute_spectrogram(
@@ -174,9 +177,6 @@ class TimbreConverter(SynthBase):
         if output_path is None:
             return audio
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
-
-
-
 
 
 class VoiceCloner:
@@ -198,8 +198,8 @@ class VoiceCloner:
         target_text,
         gender,
         output_path,
-        voice_version = 0,
-        tau = 0.3
+        voice_version=0,
+        tau=0.3
     ):
         if not os.path.exists(reference_audio_path):
             raise FileNotFoundError(f"[zunel] Reference audio not found: {reference_audio_path}")
@@ -214,12 +214,12 @@ class VoiceCloner:
         tts_enhanced_path = os.path.join(self.temp_dir, 'tts_enhanced.wav')
 
         await self.tts_generator.save(
-            text = target_text,
-            voice = voice,
-            pitch = "+0Hz",
-            rate = "+0%",
-            volume = "+0%",
-            output_file = tts_raw_path
+            text=target_text,
+            voice=voice,
+            pitch="+0Hz",
+            rate="+0%",
+            volume="+0%",
+            output_file=tts_raw_path
         )
 
         enhance_tts(tts_raw_path, tts_enhanced_path, sr=self.converter.cfg.audio.sample_rate)
@@ -230,11 +230,11 @@ class VoiceCloner:
 
         print("[zunel] Performing voice conversion...")
         self.converter.convert(
-            audio_src_path = tts_enhanced_path,
-            src_se = source_se,
-            tgt_se = target_se,
-            output_path = output_path,
-            tau = tau
+            audio_src_path=tts_enhanced_path,
+            src_se=source_se,
+            tgt_se=target_se,
+            output_path=output_path,
+            tau=tau
         )
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path
