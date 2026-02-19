@@ -105,7 +105,10 @@ class TimbreConverter(SynthBase):
 
         cpu_count = os.cpu_count() or 4
         torch.set_num_threads(cpu_count)
-        torch.set_num_interop_threads(max(1, cpu_count // 2))
+        try:
+            torch.set_num_interop_threads(max(1, cpu_count // 2))
+        except RuntimeError:
+            pass
 
         self.model.eval()
 
