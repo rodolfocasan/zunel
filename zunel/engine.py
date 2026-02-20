@@ -23,6 +23,7 @@ from zunel.utils.resources import resolve_thread_counts
 
 
 _MAX_REF_DURATION = 8.0
+_WARMUP_SPEC_FRAMES = 200
 
 
 def _remove_all_weight_norm(model):
@@ -74,6 +75,12 @@ def _apply_threads(mode):
     except RuntimeError:
         pass
     print(f'[zunel] Thread mode: {mode} | intra: {n_intra} | interop: {n_interop} | total CPUs: {total}')
+
+
+def _patch_gru_for_compile(model):
+    if hasattr(model, 'speaker_embedder') and hasattr(model.speaker_embedder, 'gru'):
+        model.speaker_embedder.gru.flatten_parameters = lambda: None
+    print('[zunel] GRU flatten_parameters patched for torch.compile compatibility')
 
 
 def _quantize_linear_torchao(model):
@@ -158,6 +165,8 @@ class TimbreConverter(SynthBase):
         self.speaker_adapter_src = None
         self.speaker_adapter_tgt = None
         self._se_cache = {}
+        self._compiled_vc = None
+        self._compiled_se = None
 
     def optimize_for_cpu(self, quantize=True, compile_model=True, thread_mode='deterministic'):
         """
@@ -177,44 +186,65 @@ class TimbreConverter(SynthBase):
         if quantize:
             _set_quantized_backend()
 
-            ao_ok = _quantize_linear_torchao(self.model)
-            if ao_ok:
-                _quantize_gru_legacy(self.model)
+            if compile_model:
+                ao_ok = _quantize_linear_torchao(self.model)
+                if not ao_ok:
+                    print('[zunel] torchao unavailable — skipping legacy quantize_dynamic (causes graph breaks with torch.compile)')
             else:
-                _quantize_all_legacy(self.model)
+                ao_ok = _quantize_linear_torchao(self.model)
+                if ao_ok:
+                    _quantize_gru_legacy(self.model)
+                else:
+                    _quantize_all_legacy(self.model)
 
         if compile_model and hasattr(torch, 'compile'):
             try:
-                os.environ.setdefault('TORCHINDUCTOR_FREEZING', '1')
-                self.model = torch.compile(
-                    self.model,
-                    mode = 'reduce-overhead',
+                _patch_gru_for_compile(self.model)
+
+                try:
+                    import torch._inductor.config as inductor_cfg
+                    inductor_cfg.freezing = True
+                except Exception:
+                    os.environ.setdefault('TORCHINDUCTOR_FREEZING', '1')
+
+                self._compiled_vc = torch.compile(
+                    self.model.voice_conversion,
+                    mode = 'default',
                     dynamic = True,
                 )
-                print('[zunel] Model compiled with torch.compile (reduce-overhead, dynamic=True)')
+                self._compiled_se = torch.compile(
+                    self.model.speaker_embedder,
+                    mode = 'default',
+                    dynamic = True,
+                )
+                print('[zunel] Compiled voice_conversion and speaker_embedder (default, dynamic=True, freezing=True)')
             except Exception as e:
                 print(f'[zunel] torch.compile skipped: {e}')
+                self._compiled_vc = None
+                self._compiled_se = None
 
     def warmup(self):
         cfg = self.cfg
         spec_channels = cfg.audio.fft_size // 2 + 1
-        dummy_spec = torch.zeros(1, spec_channels, 100, device=self.device)
-        dummy_lengths = torch.LongTensor([100]).to(self.device)
-        dummy_se = torch.zeros(1, cfg.architecture.embedding_dim, 1, device=self.device)
+        embedding_dim = getattr(cfg.architecture, 'embedding_dim', 256)
+
+        dummy_spec = torch.zeros(1, spec_channels, _WARMUP_SPEC_FRAMES, device=self.device)
+        dummy_lengths = torch.LongTensor([_WARMUP_SPEC_FRAMES]).to(self.device)
+        dummy_se = torch.zeros(1, embedding_dim, 1, device=self.device)
 
         print('[zunel] Running warmup pass...')
         with torch.inference_mode():
             try:
-                self.model.voice_conversion(
-                    dummy_spec,
-                    dummy_lengths,
-                    sid_src = dummy_se,
-                    sid_tgt = dummy_se,
-                    tau = 0.3,
-                )
-                self.model.speaker_embedder(dummy_spec.transpose(1, 2))
+                vc_fn = self._compiled_vc if self._compiled_vc is not None else self.model.voice_conversion
+                vc_fn(dummy_spec, dummy_lengths, sid_src=dummy_se, sid_tgt=dummy_se, tau=0.3)
             except Exception as e:
-                print(f'[zunel] Warmup partial: {e}')
+                print(f'[zunel] Warmup voice_conversion partial: {e}')
+
+            try:
+                se_fn = self._compiled_se if self._compiled_se is not None else self.model.speaker_embedder
+                se_fn(dummy_spec.transpose(1, 2))
+            except Exception as e:
+                print(f'[zunel] Warmup speaker_embedder partial: {e}')
         print('[zunel] Warmup complete')
 
     def load_adapters(self, adapter_path):
@@ -253,8 +283,18 @@ class TimbreConverter(SynthBase):
         return spec
 
     def _se_from_spec(self, spec):
+        se_fn = self._compiled_se if self._compiled_se is not None else self.model.speaker_embedder
         with torch.inference_mode():
-            return self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
+            return se_fn(spec.transpose(1, 2)).unsqueeze(-1)
+
+    def _convert_from_spec(self, spec, src_se, tgt_se, tau=0.3):
+        vc_fn = self._compiled_vc if self._compiled_vc is not None else self.model.voice_conversion
+        with torch.inference_mode():
+            spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
+            audio = vc_fn(
+                spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
+            )[0][0, 0].data.cpu().float().numpy()
+        return audio
 
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
@@ -282,20 +322,10 @@ class TimbreConverter(SynthBase):
 
         if se_save_path is not None:
             parent = os.path.dirname(se_save_path)
-            
             if parent:
                 os.makedirs(parent, exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
         return embedding
-
-    def _convert_from_spec(self, spec, src_se, tgt_se, tau=0.3):
-        cfg = self.cfg
-        with torch.inference_mode():
-            spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
-            audio = self.model.voice_conversion(
-                spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
-            )[0][0, 0].data.cpu().float().numpy()
-        return audio
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):
         spec = self._spec_from_path(audio_src_path)
