@@ -21,6 +21,9 @@ from zunel.audio.processing import enhance_tts
 from zunel.utils.resources import resolve_thread_counts
 
 
+
+
+
 _MAX_REF_DURATION = 8.0
 
 
@@ -110,6 +113,9 @@ def _quantize_all_legacy(model):
     )
 
 
+
+
+
 class SynthBase(object):
     def __init__(self, config_path, device='auto'):
         if device == 'auto':
@@ -144,6 +150,9 @@ class SynthBase(object):
         print('[zunel] missing/unexpected keys:', missing, unexpected)
 
 
+
+
+
 class TimbreConverter(SynthBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -154,17 +163,19 @@ class TimbreConverter(SynthBase):
         self._ref_se = None
         self._ref_audio_path = None
 
-    def optimize_for_cpu(self, quantize=True, compile_model=False, thread_mode='deterministic'):
+    def optimize_for_cpu(self, quantize=True, compile_model=False, thread_mode='optimal'):
         """
         thread_mode options:
-            'deterministic' -> 1 thread, bitwise identical output on any machine/run
-            'optimal'       -> N//2 threads, bitwise identical per machine. Safe because
-                               quantize=True converts Linear/GRU to int8 (integer arithmetic
-                               is associative — thread count has zero numerical effect), and
-                               CPU Conv1d/ConvTranspose1d partition by independent output
-                               positions so no shared float32 accumulation exists across
-                               threads. Requires quantize=True.
-            'max_speed'     -> all threads, fastest inference, bitwise identical per machine
+        - 'deterministic':  1 thread, bitwise identical output on any machine/run.
+        
+        - 'optimal':        N//2 threads, bitwise identical per machine. Safe because
+                            quantize=True converts Linear/GRU to int8 (integer arithmetic
+                            is associative — thread count has zero numerical effect), and
+                            CPU Conv1d/ConvTranspose1d partition by independent output
+                            positions so no shared float32 accumulation exists across
+                            threads. Requires quantize=True.
+        
+        - 'max_speed':      all threads, fastest inference, bitwise identical per machine.
 
         compile_model is reserved for future use. Do not set to True on CPU.
         """
@@ -263,6 +274,7 @@ class TimbreConverter(SynthBase):
 
         if se_save_path is not None:
             parent = os.path.dirname(se_save_path)
+            
             if parent:
                 os.makedirs(parent, exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
@@ -289,6 +301,9 @@ class TimbreConverter(SynthBase):
             return audio
 
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
+
+
+
 
 
 class VoiceCloner:

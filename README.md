@@ -40,7 +40,6 @@ Python 3.8+ and PyTorch 2.0+ are required.
 import torch
 import asyncio
 from cencalang_tts import TTSGenerator
-
 from zunel import TimbreConverter, VoiceCloner, download_models
 
 
@@ -56,15 +55,20 @@ if device == 'cpu':
     converter.optimize_for_cpu(
         quantize = True,
         compile_model = False,
-        thread_mode = 'deterministic' # or 'max_speed'
+        thread_mode = 'optimal' # or 'deterministic', 'max_speed'
     )
+
+MY_REFERENCE_AUDIO = "my_voice_in_any_language.wav" # spanish, english, etc
 
 tts = TTSGenerator()
 cloner = VoiceCloner(converter, tts)
 
+cloner.set_reference_audio(MY_REFERENCE_AUDIO)
+converter.warmup()
+
 async def main():
     await cloner.clone_voice(
-        reference_audio_path = 'my_voice_in_any_language.wav', # spanish, english, etc
+        reference_audio_path = MY_REFERENCE_AUDIO, 
         target_language = 'pt', # language you want to translate your voice to
         target_text = "Tecnicamente é possível. Mas levaria mais tempo, pois eu precisaria ler a documentação e alterar toda a arquitetura.", # input text (in language you want to translate your voice to)
         gender = 'male', # gender of the voice speaking in the reference audio (reference_audio_path): male or female

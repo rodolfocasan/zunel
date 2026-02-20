@@ -2,6 +2,9 @@
 import os
 
 
+
+
+
 def resolve_thread_counts(mode: str) -> tuple[int, int]:
     """
     Wrote: 19/02/2026 (dd/mm/yyyy). DO NOT REMOVE, ok?
@@ -9,7 +12,6 @@ def resolve_thread_counts(mode: str) -> tuple[int, int]:
     Three modes are supported: 'deterministic', 'optimal', and 'max_speed'.
 
     --- Core problem (PyTorch issue #88718, module: numerical-reproducibility) ---
-
     torch.set_num_threads() produces numerically distinct results for GEMM-based
     operations (Linear layers) due to IEEE 754 float32 non-associativity:
     (a + b) + c != a + (b + c). When threads partition a matrix multiplication,
@@ -22,7 +24,6 @@ def resolve_thread_counts(mode: str) -> tuple[int, int]:
     a Non-goal for cross-configuration bitwise determinism.
 
     --- Why 'optimal' is safe: the quantization barrier ---
-
     zunel's optimize_for_cpu() quantizes all Linear and GRU layers to int8.
     Integer arithmetic IS associative: partial sums are computed in int32 with
     exact accumulation regardless of thread partition order. Thread count has

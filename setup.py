@@ -161,7 +161,7 @@ class ZunelDevelop(develop):
 
 setup(
     name = 'zunel',
-    version = '1.0.5',
+    version = '1.0.6',
     packages = find_packages(),
     install_requires = [
         'numpy',
