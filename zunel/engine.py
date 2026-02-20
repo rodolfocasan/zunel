@@ -110,19 +110,6 @@ def _quantize_all_legacy(model):
     )
 
 
-def _try_compile_wave_decoder(wave_decoder):
-    if not hasattr(torch, 'compile'):
-        print('[zunel] torch.compile not available, skipping WaveDecoder compilation')
-        return wave_decoder
-    try:
-        compiled = torch.compile(wave_decoder, mode='reduce-overhead', fullgraph=False)
-        print('[zunel] WaveDecoder compiled with torch.compile (reduce-overhead)')
-        return compiled
-    except Exception as exc:
-        print(f'[zunel] torch.compile skipped for WaveDecoder: {exc}')
-        return wave_decoder
-
-
 class SynthBase(object):
     def __init__(self, config_path, device='auto'):
         if device == 'auto':
@@ -170,12 +157,16 @@ class TimbreConverter(SynthBase):
     def optimize_for_cpu(self, quantize=True, compile_model=False, thread_mode='deterministic'):
         """
         thread_mode options:
-            'deterministic' -> 1 thread, bit-identical results across any machine/run
-            'max_speed'     -> all available threads, fastest inference, consistent per machine
-            'balanced'      -> 30% of threads, moderate resource usage, consistent per machine
+            'deterministic' -> 1 thread, bitwise identical output on any machine/run
+            'optimal'       -> N//2 threads, bitwise identical per machine. Safe because
+                               quantize=True converts Linear/GRU to int8 (integer arithmetic
+                               is associative — thread count has zero numerical effect), and
+                               CPU Conv1d/ConvTranspose1d partition by independent output
+                               positions so no shared float32 accumulation exists across
+                               threads. Requires quantize=True.
+            'max_speed'     -> all threads, fastest inference, bitwise identical per machine
 
-        compile_model=True compiles only WaveDecoder (pure CNN, no GRU).
-        Requires warmup() after this call to trigger JIT compilation ahead of inference.
+        compile_model is reserved for future use. Do not set to True on CPU.
         """
         if 'cuda' in str(self.device):
             self.model = self.model.cpu()
@@ -194,16 +185,7 @@ class TimbreConverter(SynthBase):
             else:
                 _quantize_all_legacy(self.model)
 
-        if compile_model:
-            self.model.wave_decoder = _try_compile_wave_decoder(self.model.wave_decoder)
-
     def warmup(self, n_frames=256):
-        """
-        Run a dummy forward pass to trigger torch.compile JIT compilation.
-        Call this once after optimize_for_cpu() and before the first real inference.
-        n_frames controls the dummy input length — 256 frames (~3s at 22050Hz / 256 hop)
-        is large enough to compile all execution paths the wave_decoder will encounter.
-        """
         spec_channels = self.cfg.audio.fft_size // 2 + 1
         embedding_dim = getattr(self.cfg.architecture, 'embedding_dim', 256)
         dummy_spec = torch.zeros(1, spec_channels, n_frames).to(self.device)
@@ -216,11 +198,6 @@ class TimbreConverter(SynthBase):
         print('[zunel] Model warmup complete')
 
     def set_reference_audio(self, path):
-        """
-        Pre-extract and persist the speaker embedding for a reference audio file.
-        In a conversational scenario, call this once before the conversation starts.
-        Subsequent clone_voice() calls with the same path skip extraction entirely.
-        """
         abs_path = os.path.abspath(path)
         self._ref_se = self.extract_se([path])
         self._ref_audio_path = abs_path
@@ -334,11 +311,6 @@ class VoiceCloner:
             print(f"[zunel] Temporary directory cleaned: {self.temp_dir}")
 
     def set_reference_audio(self, path):
-        """
-        Pre-extract and cache the speaker embedding for the reference audio.
-        Call once before the conversation loop starts to eliminate extraction
-        latency from the first clone_voice() call.
-        """
         self.converter.set_reference_audio(path)
 
     def _is_ref_cached(self, reference_audio_path):
