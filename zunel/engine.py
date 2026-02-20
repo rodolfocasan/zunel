@@ -159,12 +159,11 @@ class TimbreConverter(SynthBase):
         self.speaker_adapter_tgt = None
         self._se_cache = {}
 
-    def optimize_for_cpu(self, quantize=True, compile_model=False, thread_mode='deterministic'):
+    def optimize_for_cpu(self, quantize=True, compile_model=True, thread_mode='deterministic'):
         """
         thread_mode options:
             'deterministic' -> 1 thread, bit-identical results across any machine/run
             'max_speed'     -> all available threads, fastest inference, consistent per machine
-            'balanced'      -> 30% of threads, moderate resource usage, consistent per machine
         """
         if 'cuda' in str(self.device):
             self.model = self.model.cpu()
@@ -173,6 +172,7 @@ class TimbreConverter(SynthBase):
         self.model.eval()
         _remove_all_weight_norm(self.model)
         _apply_threads(thread_mode)
+        torch.set_float32_matmul_precision('high')
 
         if quantize:
             _set_quantized_backend()
@@ -185,9 +185,37 @@ class TimbreConverter(SynthBase):
 
         if compile_model and hasattr(torch, 'compile'):
             try:
-                self.model = torch.compile(self.model, mode='reduce-overhead')
+                os.environ.setdefault('TORCHINDUCTOR_FREEZING', '1')
+                self.model = torch.compile(
+                    self.model,
+                    mode = 'reduce-overhead',
+                    dynamic = True,
+                )
+                print('[zunel] Model compiled with torch.compile (reduce-overhead, dynamic=True)')
             except Exception as e:
                 print(f'[zunel] torch.compile skipped: {e}')
+
+    def warmup(self):
+        cfg = self.cfg
+        spec_channels = cfg.audio.fft_size // 2 + 1
+        dummy_spec = torch.zeros(1, spec_channels, 100, device=self.device)
+        dummy_lengths = torch.LongTensor([100]).to(self.device)
+        dummy_se = torch.zeros(1, cfg.architecture.embedding_dim, 1, device=self.device)
+
+        print('[zunel] Running warmup pass...')
+        with torch.inference_mode():
+            try:
+                self.model.voice_conversion(
+                    dummy_spec,
+                    dummy_lengths,
+                    sid_src = dummy_se,
+                    sid_tgt = dummy_se,
+                    tau = 0.3,
+                )
+                self.model.speaker_embedder(dummy_spec.transpose(1, 2))
+            except Exception as e:
+                print(f'[zunel] Warmup partial: {e}')
+        print('[zunel] Warmup complete')
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
@@ -209,6 +237,25 @@ class TimbreConverter(SynthBase):
         self.model.set_speaker_adapters(self.speaker_adapter_src, self.speaker_adapter_tgt)
         print(f"[zunel] Loaded speaker adapters from {adapter_path}")
 
+    def _spec_from_path(self, path, max_duration=None):
+        cfg = self.cfg
+        audio, _ = librosa.load(
+            path,
+            sr = cfg.audio.sample_rate,
+            duration = max_duration,
+            mono = True,
+        )
+        y = torch.FloatTensor(audio).to(self.device).unsqueeze(0)
+        spec = compute_spectrogram(
+            y, cfg.audio.fft_size, cfg.audio.sample_rate,
+            cfg.audio.frame_shift, cfg.audio.frame_length, center=False,
+        ).to(self.device)
+        return spec
+
+    def _se_from_spec(self, spec):
+        with torch.inference_mode():
+            return self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
+
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
@@ -224,22 +271,8 @@ class TimbreConverter(SynthBase):
                 embeddings.append(self._se_cache[cache_key])
                 continue
 
-            audio_ref, _ = librosa.load(
-                fname,
-                sr = self.cfg.audio.sample_rate,
-                duration = _MAX_REF_DURATION,
-                mono = True
-            )
-            y = torch.FloatTensor(audio_ref).to(self.device).unsqueeze(0)
-
-            spec = compute_spectrogram(
-                y, self.cfg.audio.fft_size, self.cfg.audio.sample_rate,
-                self.cfg.audio.frame_shift, self.cfg.audio.frame_length, center=False,
-            ).to(self.device)
-
-            with torch.inference_mode():
-                g = self.model.speaker_embedder(spec.transpose(1, 2)).unsqueeze(-1)
-                emb = g.cpu()
+            spec = self._spec_from_path(fname, max_duration=_MAX_REF_DURATION)
+            emb = self._se_from_spec(spec).cpu()
 
             if cache_key is not None:
                 self._se_cache[cache_key] = emb
@@ -249,32 +282,29 @@ class TimbreConverter(SynthBase):
 
         if se_save_path is not None:
             parent = os.path.dirname(se_save_path)
+            
             if parent:
                 os.makedirs(parent, exist_ok=True)
             torch.save(embedding.cpu(), se_save_path)
         return embedding
 
-    def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):
+    def _convert_from_spec(self, spec, src_se, tgt_se, tau=0.3):
         cfg = self.cfg
-        audio, _ = librosa.load(audio_src_path, sr=cfg.audio.sample_rate)
-
         with torch.inference_mode():
-            y = torch.FloatTensor(audio).to(self.device).unsqueeze(0)
-
-            spec = compute_spectrogram(
-                y, cfg.audio.fft_size, cfg.audio.sample_rate,
-                cfg.audio.frame_shift, cfg.audio.frame_length, center=False,
-            ).to(self.device)
-
             spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
             audio = self.model.voice_conversion(
                 spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau
             )[0][0, 0].data.cpu().float().numpy()
+        return audio
+
+    def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3):
+        spec = self._spec_from_path(audio_src_path)
+        audio = self._convert_from_spec(spec, src_se, tgt_se, tau=tau)
 
         if output_path is None:
             return audio
-        
-        soundfile.write(output_path, audio, cfg.audio.sample_rate)
+
+        soundfile.write(output_path, audio, self.cfg.audio.sample_rate)
 
 
 
@@ -327,15 +357,13 @@ class VoiceCloner:
 
         print("[zunel] Extracting embeddings...")
         target_se = self.converter.extract_se([reference_audio_path])
-        source_se = self.converter.extract_se([tts_enhanced_path])
+
+        tts_spec = self.converter._spec_from_path(tts_enhanced_path)
+        source_se = self.converter._se_from_spec(tts_spec)
 
         print("[zunel] Performing voice conversion...")
-        self.converter.convert(
-            audio_src_path = tts_enhanced_path,
-            src_se = source_se,
-            tgt_se = target_se,
-            output_path = output_path,
-            tau = tau
-        )
+        audio = self.converter._convert_from_spec(tts_spec, source_se, target_se, tau=tau)
+        soundfile.write(output_path, audio, self.converter.cfg.audio.sample_rate)
+
         print(f"[zunel] Voice cloning complete: {output_path}")
         return output_path
