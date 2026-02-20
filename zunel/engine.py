@@ -63,6 +63,28 @@ def _set_quantized_backend():
     print(f'[zunel] Quantized backend: {torch.backends.quantized.engine} (arch: {machine})')
 
 
+def _apply_threads(mode):
+    total = os.cpu_count() or 1
+
+    if mode == 'deterministic':
+        n_intra = 1
+        n_interop = 1
+    elif mode == 'max_speed':
+        n_intra = total
+        n_interop = max(1, total // 2)
+    else:
+        n_intra = get_cpu_count_by_percentage(30)
+        n_interop = max(1, n_intra // 2)
+
+    torch.set_num_threads(n_intra)
+
+    try:
+        torch.set_num_interop_threads(n_interop)
+    except RuntimeError:
+        pass
+    print(f'[zunel] Thread mode: {mode} | intra: {n_intra} | interop: {n_interop} | total CPUs: {total}')
+
+
 def _quantize_linear_torchao(model):
     try:
         from torchao.quantization import quantize_, Int8WeightOnlyConfig
@@ -146,21 +168,20 @@ class TimbreConverter(SynthBase):
         self.speaker_adapter_tgt = None
         self._se_cache = {}
 
-    def optimize_for_cpu(self, quantize=True, compile_model=False):
+    def optimize_for_cpu(self, quantize=True, compile_model=False, thread_mode='deterministic'):
+        """
+        thread_mode options:
+            'deterministic' -> 1 thread, bit-identical results across any machine/run
+            'max_speed'     -> all available threads, fastest inference, consistent per machine
+            'balanced'      -> 30% of threads, moderate resource usage, consistent per machine
+        """
         if 'cuda' in str(self.device):
             self.model = self.model.cpu()
             self.device = 'cpu'
 
-        cpu_count = get_cpu_count_by_percentage(30)
-        torch.set_num_threads(cpu_count)
-
-        try:
-            torch.set_num_interop_threads(max(1, cpu_count // 2))
-        except RuntimeError:
-            pass
-
         self.model.eval()
         _remove_all_weight_norm(self.model)
+        _apply_threads(thread_mode)
 
         if quantize:
             _set_quantized_backend()
@@ -176,8 +197,6 @@ class TimbreConverter(SynthBase):
                 self.model = torch.compile(self.model, mode='reduce-overhead')
             except Exception as e:
                 print(f'[zunel] torch.compile skipped: {e}')
-
-        print(f'[zunel] CPU threads: {cpu_count} | interop: {max(1, cpu_count // 2)}')
 
     def load_adapters(self, adapter_path):
         if not os.path.exists(adapter_path):
@@ -263,7 +282,7 @@ class TimbreConverter(SynthBase):
 
         if output_path is None:
             return audio
-
+        
         soundfile.write(output_path, audio, cfg.audio.sample_rate)
 
 

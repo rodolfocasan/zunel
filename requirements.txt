@@ -3,3 +3,4 @@ numpy
 soundfile
 librosa
 gradio
+git+https://github.com/rodolfocasan/cencalang_tts.git

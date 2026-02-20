@@ -12,6 +12,7 @@ from setuptools.command.develop import develop
 
 
 TORCH_VERSION = 'torch>=2.0.0'
+CENCALANG_TTS = 'git+https://github.com/rodolfocasan/cencalang_tts.git'
 
 CUDA_TO_INDEX = {
     (12, 6): 'https://download.pytorch.org/whl/cu126',
@@ -28,6 +29,14 @@ ROCM_INDEX = 'https://download.pytorch.org/whl/rocm7.1'
 def _torch_installed():
     result = subprocess.run(
         [sys.executable, '-c', 'import torch'],
+        capture_output=True
+    )
+    return result.returncode == 0
+
+
+def _cencalang_tts_installed():
+    result = subprocess.run(
+        [sys.executable, '-c', 'import cencalang_tts'],
         capture_output=True
     )
     return result.returncode == 0
@@ -115,18 +124,35 @@ def install_torch():
         sys.exit(1)
 
 
+def install_cencalang_tts():
+    if _cencalang_tts_installed():
+        print('[zunel] cencalang_tts already installed, skipping.')
+        return
+
+    cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', CENCALANG_TTS]
+
+    print(f'[zunel] Installing cencalang_tts: {" ".join(cmd)}')
+    result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        print('[zunel] ERROR: cencalang_tts installation failed.')
+        sys.exit(1)
+
+
 
 
 
 class ZunelInstall(install):
     def run(self):
         install_torch()
+        install_cencalang_tts()
         super().run()
 
 
 class ZunelDevelop(develop):
     def run(self):
         install_torch()
+        install_cencalang_tts()
         super().run()
 
 
