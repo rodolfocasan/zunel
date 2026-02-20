@@ -16,7 +16,7 @@ from zunel.core.architecture import VoiceSynthesizer
 from zunel.audio.signal_processing import compute_spectrogram
 from zunel.core.adapters import SpeakerAdapter
 from zunel.audio.processing import enhance_tts
-from zunel.utils.resources import get_cpu_count_by_percentage
+from zunel.utils.resources import resolve_thread_counts
 
 
 
@@ -65,16 +65,7 @@ def _set_quantized_backend():
 
 def _apply_threads(mode):
     total = os.cpu_count() or 1
-
-    if mode == 'deterministic':
-        n_intra = 1
-        n_interop = 1
-    elif mode == 'max_speed':
-        n_intra = total
-        n_interop = max(1, total // 2)
-    else:
-        n_intra = get_cpu_count_by_percentage(30)
-        n_interop = max(1, n_intra // 2)
+    n_intra, n_interop = resolve_thread_counts(mode)
 
     torch.set_num_threads(n_intra)
 
